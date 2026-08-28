@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<factura id="comprobante" version="1.0.0">
+  <infoTributaria>
+    <ambiente>2</ambiente>
+    <tipoEmision>1</tipoEmision>
+    <razonSocial>PROVEEDOR SIN RUC S.A.</razonSocial>
+    <claveAcceso>2108202601179009999900110010010000009991234567810</claveAcceso>
+    <codDoc>01</codDoc>
+    <estab>001</estab>
+    <ptoEmi>001</ptoEmi>
+    <secuencial>000000999</secuencial>
+    <dirMatriz>Direccion Ejemplo</dirMatriz>
+  </infoTributaria>
+  <infoFactura>
+    <fechaEmision>15/08/2026</fechaEmision>
+    <totalSinImpuestos>50.00</totalSinImpuestos>
+    <importeTotal>57.50</importeTotal>
+  </infoFactura>
+</factura>
