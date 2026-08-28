@@ -1,9 +1,11 @@
 from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
+from sqlalchemy.exc import IntegrityError
 
 from app.core.lector_xml import leer_factura, XMLInvalidoError
 from app.core.validaciones import validar_proveedor, EstadoProveedor
+from app.core.models import Factura
 from app.db.config import SessionLocal
 
 app = FastAPI(title="Asistente de facturas")
@@ -47,6 +49,30 @@ async def subir_factura(archivo: UploadFile = File(...)):
     db = SessionLocal()
     try:
         estado_proveedor, razon_social_registrada = validar_proveedor(db, datos.ruc_proveedor)
+
+        ya_existia = False
+        factura_existente = db.query(Factura).filter(
+            Factura.numero_factura == datos.numero_factura
+        ).first()
+
+        if factura_existente is None:
+            nueva_factura = Factura(
+                ruc_proveedor=datos.ruc_proveedor,
+                numero_factura=datos.numero_factura,
+                fecha_emision=datos.fecha_emision,
+                subtotal=datos.subtotal,
+                impuestos=datos.impuestos,
+                total=datos.total,
+                estado="pendiente",
+            )
+            try:
+                db.add(nueva_factura)
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                ya_existia = True
+        else:
+            ya_existia = True
     finally:
         db.close()
 
@@ -54,7 +80,17 @@ async def subir_factura(archivo: UploadFile = File(...)):
     clase_sello = f"sello-{estado_proveedor.value}"
     razon_mostrada = razon_social_registrada or datos.razon_social
 
+    aviso_duplicado = ""
+    if ya_existia:
+        aviso_duplicado = """
+        <div class="alerta" style="margin-bottom: 16px;">
+            <strong>Ya estaba guardada</strong>
+            Esta factura ya existia en el sistema (mismo numero de factura). No se duplico.
+        </div>
+        """
+
     return f"""
+    {aviso_duplicado}
     <div class="registro">
         <span class="sello {clase_sello}">{etiqueta}</span>
         <p class="registro-titulo">Factura electronica valida</p>
