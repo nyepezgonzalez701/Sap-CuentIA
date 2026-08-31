@@ -1,0 +1,60 @@
+﻿<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Facturas aprobadas</title>
+<script src="https://unpkg.com/htmx.org@1.9.10"></script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #F4F5F7; --surface: #FFFFFF; --border: #E1E4EA; --ink: #1A2332;
+    --slate: #5C6672; --slate-light: #8992A0; --accent: #2B4C7E; --accent-dark: #1D3A63;
+    --success: #1F7A54; --success-bg: #E7F5EE; --success-border: #A9D9C3;
+    --danger: #B33F32; --danger-bg: #FBEAE7; --danger-border: #EFC0B7;
+    --warning: #8A5A12; --warning-bg: #FBF1DF;
+    --font-display: 'Source Serif 4', Georgia, serif;
+    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px); background-size: 32px 32px; background-position: -1px -1px; color: var(--ink); font-family: var(--font-body); min-height: 100vh; padding: 48px 20px; }
+  .wrap { max-width: 760px; margin: 0 auto; }
+  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--slate); margin: 0 0 10px; }
+  h1 { font-family: var(--font-display); font-weight: 600; font-size: 28px; margin: 0 0 6px; }
+  .subtitulo { color: var(--slate); font-size: 14px; margin: 0 0 28px; }
+  .subtitulo a { color: var(--accent); }
+  .tarjeta { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 22px 24px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(26, 35, 50, 0.04); }
+  .tarjeta-header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
+  .tarjeta-nombre { font-family: var(--font-display); font-weight: 600; font-size: 17px; }
+  .tarjeta-monto { font-family: var(--font-mono); font-weight: 600; font-size: 16px; }
+  .tarjeta-meta { font-family: var(--font-mono); font-size: 12px; color: var(--slate-light); margin-bottom: 16px; }
+  .fila-accion { display: flex; gap: 10px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--border); padding-top: 16px; }
+  select, input[type="text"] { font-family: var(--font-body); font-size: 13.5px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 4px; background: white; color: var(--ink); }
+  select { flex: 1; min-width: 200px; }
+  input[type="text"] { flex: 1; min-width: 160px; }
+  .btn { font-family: var(--font-body); font-weight: 600; font-size: 13.5px; border: none; padding: 9px 18px; border-radius: 4px; cursor: pointer; white-space: nowrap; }
+  .btn-aprobar { background: var(--success); color: white; }
+  .btn-aprobar:hover { background: #185f42; }
+  .btn-rechazar { background: transparent; color: var(--danger); border: 1px solid var(--danger-border); }
+  .fila-usuario { display: flex; gap: 10px; margin-bottom: 10px; flex-wrap: wrap; }
+  .fila-usuario input { flex: 1; min-width: 160px; }
+  .vacio { text-align: center; padding: 60px 20px; color: var(--slate-light); font-size: 14px; }
+  .resultado-accion { padding: 12px 16px; border-radius: 5px; font-size: 13.5px; margin-bottom: 16px; }
+  .resultado-aprobada { background: var(--success-bg); border: 1px solid var(--success-border); color: var(--success); }
+  .resultado-rechazada { background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--danger); }
+  .resultado-error { background: var(--warning-bg); border: 1px solid #E8C878; color: var(--warning); }
+</style>
+</head>
+<body>
+  <div class="wrap">
+    <p class="eyebrow">Sistema de procesamiento contable</p>
+    <h1>Facturas aprobadas</h1>
+    <p class="subtitulo"><a href="/facturas">&larr; Volver a la mesa de aprobacion</a></p>
+    <div id="lista-facturas">
+      {{ contenido_lista | safe }}
+    </div>
+  </div>
+</body>
+</html>
