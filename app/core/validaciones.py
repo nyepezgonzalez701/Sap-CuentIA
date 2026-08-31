@@ -1,7 +1,7 @@
 from enum import Enum
 from sqlalchemy.orm import Session
 
-from app.core.models import Proveedor
+from app.core.models import Proveedor, Factura
 
 
 class EstadoProveedor(str, Enum):
@@ -20,3 +20,8 @@ def validar_proveedor(db: Session, ruc: str) -> tuple[EstadoProveedor, str | Non
         return EstadoProveedor.ACTIVO, proveedor.razon_social
 
     return EstadoProveedor.INACTIVO, proveedor.razon_social
+
+
+def detectar_duplicado(db: Session, numero_factura: str) -> bool:
+    existente = db.query(Factura).filter(Factura.numero_factura == numero_factura).first()
+    return existente is not None

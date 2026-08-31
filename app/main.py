@@ -1,12 +1,12 @@
 from fastapi import FastAPI, Request, UploadFile, File
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
-from sqlalchemy.exc import IntegrityError
 
 from app.core.lector_xml import leer_factura, XMLInvalidoError
-from app.core.validaciones import validar_proveedor, EstadoProveedor
+from app.core.validaciones import validar_proveedor, detectar_duplicado, EstadoProveedor
 from app.core.models import Factura
 from app.db.config import SessionLocal
+from app.adaptadores.asesor_ia.simulador import SugeridorSimulado
 
 app = FastAPI(title="Asistente de facturas")
 templates = Jinja2Templates(directory="app/templates")
@@ -48,31 +48,37 @@ async def subir_factura(archivo: UploadFile = File(...)):
 
     db = SessionLocal()
     try:
+        ya_existia = detectar_duplicado(db, datos.numero_factura)
+
+        # Regla dura: una factura duplicada queda BLOQUEADA. No se procesa,
+        # no se sugiere cuenta, no se guarda de nuevo. Se corta aqui mismo.
+        if ya_existia:
+            db.close()
+            return f"""
+            <div class="alerta">
+                <strong>Factura bloqueada: numero duplicado</strong>
+                Ya existe una factura guardada con el numero {datos.numero_factura}.
+                No puede volver a procesarse ni aparecer como pendiente otra vez.
+            </div>
+            """
+
         estado_proveedor, razon_social_registrada = validar_proveedor(db, datos.ruc_proveedor)
 
-        ya_existia = False
-        factura_existente = db.query(Factura).filter(
-            Factura.numero_factura == datos.numero_factura
-        ).first()
+        asesor = SugeridorSimulado(db)
+        sugerencia = asesor.sugerir(datos.ruc_proveedor, datos.razon_social)
 
-        if factura_existente is None:
-            nueva_factura = Factura(
-                ruc_proveedor=datos.ruc_proveedor,
-                numero_factura=datos.numero_factura,
-                fecha_emision=datos.fecha_emision,
-                subtotal=datos.subtotal,
-                impuestos=datos.impuestos,
-                total=datos.total,
-                estado="pendiente",
-            )
-            try:
-                db.add(nueva_factura)
-                db.commit()
-            except IntegrityError:
-                db.rollback()
-                ya_existia = True
-        else:
-            ya_existia = True
+        nueva_factura = Factura(
+            ruc_proveedor=datos.ruc_proveedor,
+            numero_factura=datos.numero_factura,
+            fecha_emision=datos.fecha_emision,
+            subtotal=datos.subtotal,
+            impuestos=datos.impuestos,
+            total=datos.total,
+            estado="pendiente",
+            cuenta_sugerida=sugerencia.codigo if sugerencia else None,
+        )
+        db.add(nueva_factura)
+        db.commit()
     finally:
         db.close()
 
@@ -80,20 +86,22 @@ async def subir_factura(archivo: UploadFile = File(...)):
     clase_sello = f"sello-{estado_proveedor.value}"
     razon_mostrada = razon_social_registrada or datos.razon_social
 
-    aviso_duplicado = ""
-    if ya_existia:
-        aviso_duplicado = """
-        <div class="alerta" style="margin-bottom: 16px;">
-            <strong>Ya estaba guardada</strong>
-            Esta factura ya existia en el sistema (mismo numero de factura). No se duplico.
-        </div>
-        """
+    fila_cuenta = f"""
+    <div class="ledger-fila">
+        <span class="ledger-label">Cuenta sugerida</span>
+        <span class="ledger-valor">{sugerencia.codigo} - {sugerencia.nombre}</span>
+    </div>
+    """ if sugerencia else """
+    <div class="ledger-fila">
+        <span class="ledger-label">Cuenta sugerida</span>
+        <span class="ledger-valor">Sin sugerencia (revisar catalogo)</span>
+    </div>
+    """
 
     return f"""
-    {aviso_duplicado}
     <div class="registro">
         <span class="sello {clase_sello}">{etiqueta}</span>
-        <p class="registro-titulo">Factura electronica valida</p>
+        <p class="registro-titulo">Factura electronica valida &middot; pendiente de aprobacion</p>
         <p class="registro-nombre">{razon_mostrada}</p>
         <div class="ledger">
             <div class="ledger-fila"><span class="ledger-label">RUC proveedor</span><span class="ledger-valor">{datos.ruc_proveedor}</span></div>
@@ -103,6 +111,7 @@ async def subir_factura(archivo: UploadFile = File(...)):
             <div class="ledger-fila"><span class="ledger-label">Subtotal</span><span class="ledger-valor">$ {datos.subtotal:.2f}</span></div>
             <div class="ledger-fila"><span class="ledger-label">Impuestos</span><span class="ledger-valor">$ {datos.impuestos:.2f}</span></div>
             <div class="ledger-fila"><span class="ledger-label">Total</span><span class="ledger-valor destacado">$ {datos.total:.2f}</span></div>
+            {fila_cuenta}
         </div>
     </div>
     """
