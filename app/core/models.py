@@ -36,6 +36,7 @@ class CuentaContable(Base):
     id = Column(Integer, primary_key=True, index=True)
     codigo = Column(String, nullable=False, unique=True, index=True)
     nombre = Column(String, nullable=False)
+    tipo_cuenta = Column(String, nullable=False, default="D")  # T=total (agrupadora), D=detalle (registrable)
     activa = Column(Boolean, nullable=False, default=True)
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
 

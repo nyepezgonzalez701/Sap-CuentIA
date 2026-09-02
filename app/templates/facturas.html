@@ -44,6 +44,11 @@
   .rechazo-motivo { display: none; margin-top: 10px; }
   .rechazo-motivo.visible { display: block; }
   .rechazo-motivo textarea { width: 100%; font-family: var(--font-body); font-size: 13px; padding: 8px 10px; border: 1px solid var(--danger-border); border-radius: 4px; resize: vertical; min-height: 50px; margin-bottom: 8px; box-sizing: border-box; }
+ .criterios { margin-bottom: 16px; }
+.criterio { font-size: 12.5px; padding: 8px 12px; border-radius: 4px; margin-bottom: 6px; border-left: 3px solid; }
+.criterio-ok { background: var(--success-bg); border-color: var(--success); color: var(--success); }
+.criterio-alerta { background: var(--warning-bg); border-color: var(--warning); color: var(--warning); }
+.criterio-riesgo { background: var(--danger-bg); border-color: var(--danger); color: var(--danger); }
   .vacio { text-align: center; padding: 60px 20px; color: var(--slate-light); font-size: 14px; }
   .resultado-accion { padding: 12px 16px; border-radius: 5px; font-size: 13.5px; margin-bottom: 16px; }
   .resultado-aprobada { background: var(--success-bg); border: 1px solid var(--success-border); color: var(--success); }
@@ -55,7 +60,7 @@
   <div class="wrap">
     <p class="eyebrow">Sistema de procesamiento contable</p>
     <h1>Facturas pendientes de aprobacion</h1>
-    <p class="subtitulo"><a href="/">&larr; Volver a subir una factura</a></p>
+    <p class="subtitulo"><a href="/">&larr; Volver a subir una factura</a> &middot; <a href="/historial">Ver historial de auditoria &rarr;</a></p>
     <div id="lista-facturas">
       {{ contenido_lista | safe }}
     </div>

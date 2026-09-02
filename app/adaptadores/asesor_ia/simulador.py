@@ -22,7 +22,11 @@ class SugeridorSimulado(SugeridorCuenta):
 
         cuenta = (
             self.db.query(CuentaContable)
-            .filter(CuentaContable.codigo == codigo_propuesto, CuentaContable.activa == True)  # noqa: E712
+            .filter(
+                CuentaContable.codigo == codigo_propuesto,
+                CuentaContable.activa == True,  # noqa: E712
+                CuentaContable.tipo_cuenta == "D",
+            )
             .first()
         )
 

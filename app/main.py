@@ -1,4 +1,7 @@
-﻿from fastapi import FastAPI, Request, UploadFile, File, Form
+﻿import html
+from zoneinfo import ZoneInfo
+
+from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse
 from fastapi.templating import Jinja2Templates
 
@@ -17,11 +20,14 @@ from app.core.envios_sap import (
     enviar_a_sap,
     EnvioInvalidoError,
 )
+from app.core.historial import obtener_historial_paginado, FilaHistorial, PaginaHistorial
 from app.db.config import SessionLocal
 from app.adaptadores.asesor_ia.simulador import SugeridorSimulado
 
 app = FastAPI(title="Asistente de facturas")
 templates = Jinja2Templates(directory="app/templates")
+
+ZONA_ECUADOR = ZoneInfo("America/Guayaquil")
 
 ETIQUETAS_ESTADO = {
     EstadoProveedor.ACTIVO: "Proveedor activo",
@@ -101,12 +107,43 @@ async def subir_factura(archivo: UploadFile = File(...)):
     """
 
 
-def _renderizar_tarjeta_pendiente(factura, cuentas_activas):
+def _criterios_evaluacion(estado_proveedor, razon_social, sugerencia):
+    """
+    Construye la franja de criterios visibles que ayudan a decidir --
+    el sistema nunca decide, solo hace visible la evidencia.
+    """
+    criterios = []
+
+    if estado_proveedor == EstadoProveedor.ACTIVO:
+        criterios.append(("criterio-ok", f"Proveedor activo en el maestro ({razon_social})."))
+    elif estado_proveedor == EstadoProveedor.INACTIVO:
+        criterios.append(("criterio-riesgo", f"Proveedor INACTIVO en el maestro ({razon_social}). Revisar antes de aprobar."))
+    else:
+        criterios.append(("criterio-alerta", "El RUC no esta registrado en el maestro de proveedores. Validar identidad antes de aprobar."))
+
+    if sugerencia:
+        etiqueta_confianza = "alta" if sugerencia.confianza == "alta" else "baja"
+        clase = "criterio-ok" if etiqueta_confianza == "alta" else "criterio-alerta"
+        texto = f"Cuenta sugerida con confianza {etiqueta_confianza}: {sugerencia.codigo} - {sugerencia.nombre}."
+        if etiqueta_confianza == "baja":
+            texto += " Se recomienda confirmar la cuenta manualmente."
+        criterios.append((clase, texto))
+    else:
+        criterios.append(("criterio-riesgo", "Sin cuenta sugerida. Seleccionar una cuenta manualmente antes de aprobar."))
+
+    filas = "".join(
+        f'<div class="criterio {clase}">{texto}</div>' for clase, texto in criterios
+    )
+    return f'<div class="criterios">{filas}</div>'
+
+
+def _renderizar_tarjeta_pendiente(factura, cuentas_activas, estado_proveedor, razon_social, sugerencia_actual):
     opciones = "".join(
         f'<option value="{c.codigo}" {"selected" if c.codigo == factura.cuenta_sugerida else ""}>{c.codigo} - {c.nombre}</option>'
         for c in cuentas_activas
     )
     sugerida_texto = factura.cuenta_sugerida or "sin sugerencia"
+    criterios_html = _criterios_evaluacion(estado_proveedor, razon_social, sugerencia_actual)
 
     return f"""
     <div class="tarjeta" id="factura-{factura.id}">
@@ -115,6 +152,7 @@ def _renderizar_tarjeta_pendiente(factura, cuentas_activas):
             <span class="tarjeta-monto">$ {factura.total:.2f}</span>
         </div>
         <div class="tarjeta-meta">Factura {factura.numero_factura} &middot; {factura.fecha_emision} &middot; sugerida: {sugerida_texto}</div>
+        {criterios_html}
         <form hx-post="/facturas/{factura.id}/aprobar" hx-target="#factura-{factura.id}" hx-swap="outerHTML">
             <div class="fila-usuario"><input type="text" name="usuario" placeholder="Tu nombre" required></div>
             <div class="fila-accion">
@@ -141,7 +179,16 @@ def _renderizar_lista_pendientes(db):
     cuentas_activas = obtener_cuentas_activas(db)
     if not pendientes:
         return '<div class="vacio">No hay facturas pendientes de aprobacion.</div>'
-    return "".join(_renderizar_tarjeta_pendiente(f, cuentas_activas) for f in pendientes)
+
+    asesor = SugeridorSimulado(db)
+    tarjetas = []
+    for factura in pendientes:
+        estado_proveedor, razon_social = validar_proveedor(db, factura.ruc_proveedor)
+        sugerencia_actual = asesor.sugerir(factura.ruc_proveedor, razon_social or "")
+        tarjetas.append(
+            _renderizar_tarjeta_pendiente(factura, cuentas_activas, estado_proveedor, razon_social or factura.ruc_proveedor, sugerencia_actual)
+        )
+    return "".join(tarjetas)
 
 
 @app.get("/facturas", response_class=HTMLResponse)
@@ -226,3 +273,76 @@ def enviar_sap(factura_id: int, usuario: str = Form(...)):
             return f'<div class="resultado-accion resultado-error"><strong>SAP rechazo el envio.</strong> {e}</div>'
     finally:
         db.close()
+
+
+BADGES_ACCION = {
+    "aprobada": ("badge-exito", "Aprobada"),
+    "registrada_sap": ("badge-exito", "Registrada en SAP"),
+    "rechazada": ("badge-peligro", "Rechazada"),
+    "error_envio_sap": ("badge-peligro", "Error al enviar a SAP"),
+}
+BADGE_DEFECTO = ("badge-neutro", None)
+
+
+def _formatear_fecha_ecuador(momento) -> str:
+    if momento is None:
+        return "-"
+    return momento.astimezone(ZONA_ECUADOR).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _renderizar_fila_historial(fila: FilaHistorial) -> str:
+    clase_badge, etiqueta = BADGES_ACCION.get(fila.accion, BADGE_DEFECTO)
+    etiqueta = etiqueta or html.escape(fila.accion)
+    usuario_seguro = html.escape(fila.usuario)
+    cuenta_texto = (
+        f' &middot; cuenta: {html.escape(fila.cuenta_utilizada)}' if fila.cuenta_utilizada else ""
+    )
+    motivo_html = (
+        f'<div class="fila-motivo">{html.escape(fila.motivo)}</div>' if fila.motivo else ""
+    )
+    fecha_texto = _formatear_fecha_ecuador(fila.creado_en)
+
+    return f"""
+    <div class="tarjeta" id="historial-{fila.id}">
+        <div class="tarjeta-header">
+            <span class="badge {clase_badge}">{etiqueta}</span>
+            <span class="tarjeta-monto">{fecha_texto}</span>
+        </div>
+        <div class="tarjeta-meta">Factura {html.escape(fila.numero_factura)} &middot; RUC {html.escape(fila.ruc_proveedor)} &middot; por {usuario_seguro}{cuenta_texto}</div>
+        {motivo_html}
+    </div>
+    """
+
+
+def _renderizar_lista_historial(resultado: PaginaHistorial) -> str:
+    if not resultado.filas:
+        if resultado.pagina > 1:
+            return '<div class="vacio">No hay mas registros. <a href="/historial">&larr; Volver a la primera pagina</a></div>'
+        return '<div class="vacio">Todavia no hay acciones registradas en el historial.</div>'
+
+    filas_html = "".join(_renderizar_fila_historial(f) for f in resultado.filas)
+
+    nav = ['<div class="paginacion">']
+    if resultado.pagina > 1:
+        nav.append(f'<a href="/historial?pagina={resultado.pagina - 1}">&larr; Anterior</a>')
+    else:
+        nav.append("<span></span>")
+    nav.append(f'<span class="pagina-actual">Pagina {resultado.pagina}</span>')
+    if resultado.hay_pagina_siguiente:
+        nav.append(f'<a href="/historial?pagina={resultado.pagina + 1}">Siguiente &rarr;</a>')
+    else:
+        nav.append("<span></span>")
+    nav.append("</div>")
+
+    return filas_html + "".join(nav)
+
+
+@app.get("/historial", response_class=HTMLResponse)
+def ver_historial(request: Request, pagina: int = 1):
+    db = SessionLocal()
+    try:
+        resultado = obtener_historial_paginado(db, pagina)
+        contenido_lista = _renderizar_lista_historial(resultado)
+    finally:
+        db.close()
+    return templates.TemplateResponse(request, "historial.html", {"contenido_lista": contenido_lista})

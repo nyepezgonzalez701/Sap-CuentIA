@@ -17,7 +17,12 @@ def obtener_facturas_pendientes(db: Session) -> list[Factura]:
 
 
 def obtener_cuentas_activas(db: Session) -> list[CuentaContable]:
-    return db.query(CuentaContable).filter(CuentaContable.activa == True).all()
+    return (
+        db.query(CuentaContable)
+        .filter(CuentaContable.activa == True, CuentaContable.tipo_cuenta == "D")
+        .order_by(CuentaContable.codigo.asc())
+        .all()
+    )
 
 
 def aprobar_factura(db: Session, factura_id: int, usuario: str, codigo_cuenta: str) -> Factura:
@@ -32,11 +37,15 @@ def aprobar_factura(db: Session, factura_id: int, usuario: str, codigo_cuenta: s
 
     cuenta = (
         db.query(CuentaContable)
-        .filter(CuentaContable.codigo == codigo_cuenta, CuentaContable.activa == True)
+        .filter(
+            CuentaContable.codigo == codigo_cuenta,
+            CuentaContable.activa == True,
+            CuentaContable.tipo_cuenta == "D",
+        )
         .first()
     )
     if cuenta is None:
-        raise AccionInvalidaError("La cuenta seleccionada no existe o no esta activa en el catalogo.")
+        raise AccionInvalidaError("La cuenta seleccionada no existe, no esta activa, o es una cuenta totalizadora (no se puede registrar directamente en una cuenta 'T').")
 
     factura.estado = "aprobada"
     factura.cuenta_final = cuenta.codigo
