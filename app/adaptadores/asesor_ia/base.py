@@ -7,7 +7,8 @@ from typing import Optional
 class SugerenciaCuenta:
     codigo: str
     nombre: str
-    confianza: str  # "alta" | "baja" -- que tan segura es la sugerencia
+    confianza: str  # "alta" | "media" | "baja" -- que tan segura es la sugerencia
+    justificacion: Optional[str] = None  # por que se eligio esta cuenta (adaptadores IA)
 
 
 class SugeridorCuenta(ABC):

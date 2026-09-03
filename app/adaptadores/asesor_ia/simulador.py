@@ -10,6 +10,7 @@ REGLAS_POR_RUC = {
 }
 
 CUENTA_GENERICA_CODIGO = "5.1.99"  # Gastos por clasificar
+# Ejemplo de Simulador con IA falta coenctar al flujo real 
 
 
 class SugeridorSimulado(SugeridorCuenta):
@@ -34,3 +35,5 @@ class SugeridorSimulado(SugeridorCuenta):
             return None
 
         return SugerenciaCuenta(codigo=cuenta.codigo, nombre=cuenta.nombre, confianza=confianza)
+
+   

@@ -15,7 +15,7 @@ def obtener_facturas_pendientes(db: Session) -> list[Factura]:
         .all()
     )
 
-
+# Ejemplo para obtener las cuenats activas
 def obtener_cuentas_activas(db: Session) -> list[CuentaContable]:
     return (
         db.query(CuentaContable)
@@ -24,6 +24,7 @@ def obtener_cuentas_activas(db: Session) -> list[CuentaContable]:
         .all()
     )
 
+# Procesar Factura con los campos 
 
 def aprobar_factura(db: Session, factura_id: int, usuario: str, codigo_cuenta: str) -> Factura:
     factura = db.query(Factura).filter(Factura.id == factura_id).first()
@@ -56,12 +57,12 @@ def aprobar_factura(db: Session, factura_id: int, usuario: str, codigo_cuenta: s
         usuario=usuario.strip(),
         cuenta_utilizada=cuenta.codigo,
     )
-    db.add(historial)
+    db.add(historial)                                                                                             
     db.commit()
     db.refresh(factura)
     return factura
-
-
+# Rechazar factuara posible mejora para que el sistema detecte con los respectivos criterios cual factura rechazr y que reflejo los campos porque la idea es logra automatizar los preocesos de contabilidad en este caso 
+#No que el sistema rechaza automaticamente cuando flata also si no que le muestre exactamente al susario que es lo que falta                                                                                           
 def rechazar_factura(db: Session, factura_id: int, usuario: str, motivo: str) -> Factura:
     factura = db.query(Factura).filter(Factura.id == factura_id).first()
 
@@ -73,8 +74,10 @@ def rechazar_factura(db: Session, factura_id: int, usuario: str, motivo: str) ->
         raise AccionInvalidaError("Debes indicar quien rechaza.")
     if not motivo or not motivo.strip():
         raise AccionInvalidaError("Debes indicar un motivo de rechazo.")
-
+                                                                                                                                                                                                                                                    
     factura.estado = "rechazada"
+
+
 
     historial = HistorialAccion(
         factura_id=factura.id,

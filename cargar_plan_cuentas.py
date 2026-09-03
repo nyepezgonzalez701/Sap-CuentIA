@@ -1,21 +1,4 @@
-"""
-Carga el plan de cuentas real (formato Superintendencia de Companias:
-ACTIVO completo, COSTO DE VENTAS Y PRODUCCION, GASTOS) en la tabla
-cuentas_contables, y desactiva las cuentas de prueba del simulador
-(5.1.01, 5.1.02, 5.1.99) sin borrarlas, porque ya estan referenciadas por
-facturas e historial_acciones existentes.
 
-Alcance intencional: del catalogo oficial completo (~400 cuentas, incluye
-Pasivo, Patrimonio, Ingresos, Flujo de Efectivo, Cambios en Patrimonio) solo
-se cargan las secciones 1 (ACTIVO), 51 (COSTO DE VENTAS Y PRODUCCION) y 52
-(GASTOS): son las que se usan para codificar facturas de compra a
-proveedores. Las filas marcadas "ELIMINADO" en el documento fuente se
-excluyen. La cuenta 102011402 conserva el texto "EXLORACION" tal como
-aparece en el documento oficial (probable error tipografico de origen, no
-de esta carga).
-
-Se puede correr mas de una vez sin duplicar filas.
-"""
 from sqlalchemy import text
 
 from app.db.config import SessionLocal, engine

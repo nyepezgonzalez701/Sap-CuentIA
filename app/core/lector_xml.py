@@ -1,11 +1,19 @@
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Optional
 
 
 class XMLInvalidoError(Exception):
     """Se lanza cuando el XML no tiene la estructura esperada de una factura del SRI."""
     pass
+
+
+@dataclass
+class DetalleFactura:
+    descripcion: str
+    cantidad: Optional[float] = None
+    precio_unitario: Optional[float] = None
 
 
 @dataclass
@@ -18,6 +26,7 @@ class DatosFactura:
     subtotal: float
     impuestos: float
     total: float
+    detalle: list[DetalleFactura] = field(default_factory=list)
 
 
 def _obtener_texto(elemento, ruta):
@@ -93,6 +102,8 @@ def leer_factura(xml_bytes: bytes) -> DatosFactura:
         if valor_nodo is not None and valor_nodo.text:
             impuestos += float(valor_nodo.text)
 
+    detalle = _extraer_detalle(factura)
+
     return DatosFactura(
         ruc_proveedor=ruc,
         razon_social=razon_social,
@@ -102,4 +113,41 @@ def leer_factura(xml_bytes: bytes) -> DatosFactura:
         subtotal=round(subtotal, 2),
         impuestos=round(impuestos, 2),
         total=round(total, 2),
+        detalle=detalle,
     )
+
+
+def _extraer_detalle(factura) -> list[DetalleFactura]:
+    """
+    Extrae la descripcion de cada item de <detalles><detalle>. No es obligatorio:
+    si el nodo falta o un item no tiene descripcion, simplemente se omite -- no
+    invalida la factura, ya que hoy nada mas del sistema depende de este dato.
+    """
+    items = []
+    for detalle_nodo in factura.findall("detalles/detalle"):
+        descripcion_nodo = detalle_nodo.find("descripcion")
+        if descripcion_nodo is None or descripcion_nodo.text is None:
+            continue
+
+        cantidad = None
+        cantidad_nodo = detalle_nodo.find("cantidad")
+        if cantidad_nodo is not None and cantidad_nodo.text:
+            try:
+                cantidad = float(cantidad_nodo.text)
+            except ValueError:
+                cantidad = None
+
+        precio_unitario = None
+        precio_nodo = detalle_nodo.find("precioUnitario")
+        if precio_nodo is not None and precio_nodo.text:
+            try:
+                precio_unitario = float(precio_nodo.text)
+            except ValueError:
+                precio_unitario = None
+
+        items.append(DetalleFactura(
+            descripcion=descripcion_nodo.text.strip(),
+            cantidad=cantidad,
+            precio_unitario=precio_unitario,
+        ))
+    return items
