@@ -15,6 +15,8 @@ class Factura(Base):
     total = Column(Numeric(12, 2), nullable=False)
     estado = Column(String, nullable=False, default="pendiente")
     cuenta_sugerida = Column(String, nullable=True)
+    cuenta_sugerida_confianza = Column(String, nullable=True)  # "alta" | "media" | "baja"
+    cuenta_sugerida_justificacion = Column(Text, nullable=True)
     cuenta_final = Column(String, nullable=True)
     referencia_sap = Column(String, nullable=True)
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
@@ -39,6 +41,30 @@ class CuentaContable(Base):
     tipo_cuenta = Column(String, nullable=False, default="D")  # T=total (agrupadora), D=detalle (registrable)
     activa = Column(Boolean, nullable=False, default=True)
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class FacturaDetalleLinea(Base):
+    """
+    Una linea de detalle de una factura (item del XML), con la clasificacion que sugirio
+    la IA (tipo, destino, cuenta) y la cuenta final que confirma o corrige el aprobador.
+    Se crea al subir la factura (ver SugeridorClaudeIA.sugerir_asiento en claude_ia.py) y
+    codigo_cuenta_final se llena recien al aprobar. El IVA y la cuenta por pagar a
+    proveedores NO se guardan aqui -- se recalculan siempre desde Factura.impuestos y
+    Factura.total via construir_asiento_contable(), nunca dependen de la IA.
+    """
+    __tablename__ = "factura_detalle_lineas"
+
+    id = Column(Integer, primary_key=True, index=True)
+    factura_id = Column(Integer, ForeignKey("facturas.id"), nullable=False, index=True)
+    orden = Column(Integer, nullable=False)
+    descripcion = Column(String, nullable=False)
+    monto = Column(Numeric(12, 2), nullable=False)
+    tipo = Column(String, nullable=True)  # "bien" | "servicio"
+    destino = Column(String, nullable=True)  # "gasto" | "inventario_reventa" | "activo_fijo"
+    codigo_cuenta_sugerido = Column(String, nullable=True)
+    confianza = Column(String, nullable=True)
+    justificacion = Column(Text, nullable=True)
+    codigo_cuenta_final = Column(String, nullable=True)
 
 
 class HistorialAccion(Base):

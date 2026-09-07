@@ -14,6 +14,7 @@ class DetalleFactura:
     descripcion: str
     cantidad: Optional[float] = None
     precio_unitario: Optional[float] = None
+    monto: Optional[float] = None  # precioTotalSinImpuesto -- ya incluye descuentos, es el valor a usar en el Debe del asiento
 
 
 @dataclass
@@ -145,9 +146,18 @@ def _extraer_detalle(factura) -> list[DetalleFactura]:
             except ValueError:
                 precio_unitario = None
 
+        monto = None
+        monto_nodo = detalle_nodo.find("precioTotalSinImpuesto")
+        if monto_nodo is not None and monto_nodo.text:
+            try:
+                monto = round(float(monto_nodo.text), 2)
+            except ValueError:
+                monto = None
+
         items.append(DetalleFactura(
             descripcion=descripcion_nodo.text.strip(),
             cantidad=cantidad,
             precio_unitario=precio_unitario,
+            monto=monto,
         ))
     return items
