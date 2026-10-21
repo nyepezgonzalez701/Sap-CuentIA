@@ -67,6 +67,8 @@ class TestClasificarItemsFactura:
         assert resultado[0]["destino"] == "activo_fijo"
         assert resultado[0]["codigo_cuenta"] == "102010108"
 
+
+
     def test_servicio_se_clasifica_como_gasto(self):
         items = [{"descripcion": "Mantenimiento del vehiculo de reparto", "cantidad": 1}]
         payload = {"lineas": [_linea_ia(0, "servicio", "gasto", "602030201")]}

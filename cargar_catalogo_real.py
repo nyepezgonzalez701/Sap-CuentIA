@@ -1,53 +1,4 @@
-"""
-Reemplaza el catalogo de cuentas contables (el generico de la Superintendencia de
-Companias, cargado por cargar_plan_cuentas.py) por el catalogo REAL de la empresa.
 
-Desactiva TODAS las cuentas activas actuales (no las borra -- las facturas ya
-aprobadas conservan su codigo para siempre) y carga el catalogo nuevo completo.
-
-IMPORTANTE -- colision de codigos: el catalogo nuevo usa una numeracion parecida a
-la del catalogo oficial (ambos empiezan por 1=activo, 2=pasivo, 3=patrimonio...) pero
-los codigos NO significan lo mismo pasado el primer nivel. Hay 29 codigos que ya
-existian en la base con un significado totalmente distinto (ej. "2010301" antes era
-"cuentas por pagar proveedores locales", en el catalogo nuevo es "prestamos de
-accionistas o socios"). Se verifico que NINGUNO de esos 29 codigos esta usado en
-facturas o historial_acciones ya guardados (ver conversacion), asi que es seguro
-actualizar esas filas en su lugar (UPDATE) en vez de generar conflicto de codigo
-unico. codigo es la clave de negocio: donde ya existe, se actualiza nombre/tipo_cuenta
-y se reactiva; donde no existe, se inserta.
-
-tipo_cuenta se infiere automaticamente: el documento fuente no marca T/D explicito,
-pero SI usa una convencion consistente -- los titulos/agrupadores estan en MAYUSCULAS
-y las cuentas de detalle (las que se pueden usar en un asiento) estan en
-Mayuscula/minuscula normal. Se verifico este patron en todo el documento antes de
-usarlo como regla.
-
-Correcciones aplicadas sobre el texto fuente (documentadas, no silenciosas):
-- "10 - INVERSIONES CORRIENTES" -> se corrigio a "10102" (el codigo se veia
-  claramente mal extraido del PDF; encaja exactamente en la secuencia 10101/10102/10103).
-- "IVA en conoras de Activos Fijos 15%" -> "IVA en compras de Activos Fijos 15%"
-  ("conoras" no es una palabra, error de OCR).
-- Se omitieron: "Z - Z", "#9", "#10" (ruido, no son cuentas), la fila
-  "2020402023 - Provision de costo proyectos" (duplicado mal formado de "202040203",
-  que si se carga), "201040304 - Prestamos Hip no usar" (codigo de PASIVO aparecido
-  fuera de lugar en ACTIVOS, marcado "no usar" en el propio documento) y
-  "61020505 - SUMINISTROS Y OTROS NO USA MAL CREADO" (el documento la marca como
-  cuenta mal creada que no se debe usar).
-- "301212511 - Utilidad 2017" se dejo TAL CUAL viene en el documento (parece un
-  typo de "301010511" por la secuencia 510/[511]/512/513..., pero no se adivino la
-  correccion -- confirma con tu contador si este codigo es correcto).
-
-TODO (pendiente de tu confirmacion, igual que con el catalogo anterior):
-- IVA_COMPRAS_CODIGO se fijo en "101050101" (IVA en compras de bienes y servicios,
-  la variante sin tasa especifica). Existen variantes por tasa: "101050102" (13%),
-  "101050104" (15%), "101050109" (15% en compras de Activos Fijos) -- si necesitas
-  discriminar por tasa de IVA, hay que decidir cual usar en cada caso.
-- CUENTAS_POR_PAGAR_PROVEEDORES_CODIGO se fijo en "201010201" (Proveedores NO
-  relacionados, Local -- el caso tipico de una factura de compra a un tercero).
-  Existen variantes: relacionados/no relacionados x locales/exterior.
-
-Se puede correr mas de una vez sin duplicar filas (es idempotente).
-"""
 from sqlalchemy.orm import Session
 
 from app.db.config import SessionLocal
@@ -361,7 +312,7 @@ CATALOGO_REAL = [
     ("301010508", "Utilidad del ejercicio"),
     ("301010509", "(-) Perdida del ejercicio"),
     ("301010510", "Saldos iniciales"),
-    ("301212511", "Utilidad 2017"),  # ver TODO arriba -- posible typo de 301010511 en el documento fuente
+    ("301212511", "Utilidad 2017"),  # ver  arriba -- posible typo de 301010511 en el documento fuente
     ("301010512", "Utilidad 2018"),
     ("301010513", "Utilidad 2019"),
     ("301010514", "Utilidad 2020"),
@@ -769,7 +720,7 @@ def _tipo_cuenta(nombre: str) -> str:
     """Titulos/agrupadores estan en MAYUSCULAS (T); cuentas de detalle no (D)."""
     return "T" if nombre == nombre.upper() else "D"
 
-
+#calculo de cuentas contables
 def main():
     db: Session = SessionLocal()
     try:

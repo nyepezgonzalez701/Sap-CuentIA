@@ -28,6 +28,7 @@ class DatosFactura:
     impuestos: float
     total: float
     detalle: list[DetalleFactura] = field(default_factory=list)
+    correo_proveedor: Optional[str] = None
 
 
 def _obtener_texto(elemento, ruta):
@@ -96,7 +97,7 @@ def leer_factura(xml_bytes: bytes) -> DatosFactura:
         total = float(total_texto)
     except ValueError:
         raise XMLInvalidoError("Los valores de subtotal o total no son numericos.")
-
+#
     impuestos = 0.0
     for impuesto_nodo in info_factura.findall("totalConImpuestos/totalImpuesto"):
         valor_nodo = impuesto_nodo.find("valor")
@@ -104,6 +105,7 @@ def leer_factura(xml_bytes: bytes) -> DatosFactura:
             impuestos += float(valor_nodo.text)
 
     detalle = _extraer_detalle(factura)
+    correo_proveedor = _extraer_correo_adicional(factura)
 
     return DatosFactura(
         ruc_proveedor=ruc,
@@ -115,7 +117,25 @@ def leer_factura(xml_bytes: bytes) -> DatosFactura:
         impuestos=round(impuestos, 2),
         total=round(total, 2),
         detalle=detalle,
+        correo_proveedor=correo_proveedor,
     )
+
+
+_NOMBRES_CAMPO_CORREO = {"email", "correo", "e-mail", "correo electronico", "correo electrónico"}
+
+
+def _extraer_correo_adicional(factura) -> Optional[str]:
+    """
+    Busca un correo en <infoAdicional><campoAdicional nombre="..."> -- el emisor decide
+    libremente que campos adicionales incluir, asi que se busca por nombre de forma
+    tolerante (sin distinguir mayusculas/tildes) en vez de asumir una etiqueta fija.
+    No es obligatorio: si no existe, se omite igual que el resto de infoAdicional.
+    """
+    for campo in factura.findall("infoAdicional/campoAdicional"):
+        nombre = (campo.get("nombre") or "").strip().lower()
+        if nombre in _NOMBRES_CAMPO_CORREO and campo.text:
+            return campo.text.strip()
+    return None
 
 
 def _extraer_detalle(factura) -> list[DetalleFactura]:
@@ -137,7 +157,7 @@ def _extraer_detalle(factura) -> list[DetalleFactura]:
                 cantidad = float(cantidad_nodo.text)
             except ValueError:
                 cantidad = None
-
+#precio unitario y monto se extraen de los nodos <precioUnitario> y <precioTotalSinImpuesto> respectivamente. Se manejan posibles errores de formato y se asigna None si no se puede convertir a float.
         precio_unitario = None
         precio_nodo = detalle_nodo.find("precioUnitario")
         if precio_nodo is not None and precio_nodo.text:
@@ -145,7 +165,7 @@ def _extraer_detalle(factura) -> list[DetalleFactura]:
                 precio_unitario = float(precio_nodo.text)
             except ValueError:
                 precio_unitario = None
-
+#monto se extrae de <precioTotalSinImpuesto> y se redondea a 2 decimales. Si el nodo no existe o no es un número válido, se asigna None.
         monto = None
         monto_nodo = detalle_nodo.find("precioTotalSinImpuesto")
         if monto_nodo is not None and monto_nodo.text:

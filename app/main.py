@@ -1,13 +1,27 @@
 ﻿import html
+import os
+import urllib.parse
+from datetime import date, datetime
+from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
+from starlette.middleware.base import BaseHTTPMiddleware
 
-from app.core.lector_xml import leer_factura, XMLInvalidoError
-from app.core.validaciones import validar_proveedor, detectar_duplicado, EstadoProveedor
-from app.core.models import Factura, FacturaDetalleLinea
+from app.core import auth
+from app.core import vigilante_carpeta
+from app.core.models import HistorialVigilancia
+from app.core.ingesta import procesar_factura_xml
+from app.core.validaciones import (
+    validar_proveedor,
+    ruc_estructuralmente_valido,
+    registrar_proveedor,
+    EstadoProveedor,
+)
 from app.core.aprobaciones import (
     obtener_facturas_pendientes,
     obtener_cuentas_activas,
@@ -15,6 +29,12 @@ from app.core.aprobaciones import (
     aprobar_factura,
     aprobar_factura_lineas,
     rechazar_factura,
+    guardar_factura_preliminar,
+    es_candidata_auto_aprobacion,
+    evaluar_elegibilidad_lote,
+    filtrar_facturas_pendientes,
+    aprobar_lote,
+    FiltrosFacturas,
     AccionInvalidaError,
 )
 from app.core.envios_sap import (
@@ -22,11 +42,16 @@ from app.core.envios_sap import (
     enviar_a_sap,
     EnvioInvalidoError,
 )
+from app.core.validacion_sri import validar_en_sri, ValidacionInvalidaError
+from app.core.reportes_excel import (
+    obtener_filas_para_exportar,
+    generar_libro_excel,
+    marcar_como_exportadas,
+)
 from app.core.historial import obtener_historial_paginado, FilaHistorial, PaginaHistorial
 from app.db.config import SessionLocal
 from app.adaptadores.asesor_ia.base import SugerenciaCuenta
 from app.adaptadores.asesor_ia.claude_ia import (
-    SugeridorClaudeIA,
     construir_asiento_contable,
     filtrar_catalogo_por_destino,
     IVA_COMPRAS_CODIGO,
@@ -36,13 +61,53 @@ from app.adaptadores.asesor_ia.claude_ia import (
 )
 
 app = FastAPI(title="Asistente de facturas")
+app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
+templates.env.globals["css_version"] = lambda: int(
+    os.path.getmtime("app/static/style.css")
+)
+templates.env.globals["logo_version"] = lambda: int(
+    os.path.getmtime("app/static/logo.png")
+)
 
 ZONA_ECUADOR = ZoneInfo("America/Guayaquil")
 
+RUTAS_PUBLICAS = {"/login"}
+
+
+class SesionMiddleware(BaseHTTPMiddleware):
+    """
+    Protege todas las rutas salvo /login y /static/*: sin una cookie de sesion
+    valida, redirige a /login en vez de dejar pasar la request. Cuando la sesion
+    es valida, deja los datos del usuario (id/nombre_usuario/rol) en
+    request.state.usuario para que las rutas y las plantillas los usen.
+    """
+
+    async def dispatch(self, request: Request, call_next):
+        if request.url.path in RUTAS_PUBLICAS or request.url.path.startswith("/static"):
+            request.state.usuario = None
+            return await call_next(request)
+
+        cookie = request.cookies.get(auth.COOKIE_NAME)
+        datos_sesion = auth.leer_cookie_sesion(cookie) if cookie else None
+        if datos_sesion is None:
+            return RedirectResponse(url="/login", status_code=303)
+
+        request.state.usuario = datos_sesion
+        return await call_next(request)
+
+
+app.add_middleware(SesionMiddleware)
+
+
+@app.on_event("startup")
+def _al_arrancar_servidor() -> None:
+    # El hilo de vigilancia vive en memoria y no sobrevive a un reinicio del
+    # servidor -- el estado real al arrancar siempre es "en_espera".
+    vigilante_carpeta.reiniciar_estado_al_arrancar()
+
 ETIQUETAS_ESTADO = {
-    EstadoProveedor.ACTIVO: "Proveedor activo",
-    EstadoProveedor.INACTIVO: "Proveedor inactivo",
+    EstadoProveedor.REGISTRADO: "Proveedor registrado",
     EstadoProveedor.NO_REGISTRADO: "No registrado",
 }
 
@@ -59,64 +124,21 @@ async def subir_factura(archivo: UploadFile = File(...)):
     if not archivo.filename.lower().endswith(".xml"):
         return """<div class="alerta"><strong>Archivo invalido</strong>El archivo debe tener extension .xml</div>"""
 
-    try:
-        datos = leer_factura(contenido)
-    except XMLInvalidoError as e:
-        return f"""<div class="alerta"><strong>Factura invalida</strong>{e}</div>"""
-
     db = SessionLocal()
     try:
-        ya_existia = detectar_duplicado(db, datos.numero_factura)
-
-        if ya_existia:
-            db.close()
-            return f"""<div class="alerta"><strong>Factura bloqueada: numero duplicado</strong>Ya existe una factura guardada con el numero {datos.numero_factura}. No puede volver a procesarse ni aparecer como pendiente otra vez.</div>"""
-
-        estado_proveedor, razon_social_registrada = validar_proveedor(db, datos.ruc_proveedor)
-
-        asesor = SugeridorClaudeIA(db)
-
-        nueva_factura = Factura(
-            ruc_proveedor=datos.ruc_proveedor,
-            numero_factura=datos.numero_factura,
-            fecha_emision=datos.fecha_emision,
-            subtotal=datos.subtotal,
-            impuestos=datos.impuestos,
-            total=datos.total,
-            estado="pendiente",
-        )
-        db.add(nueva_factura)
-        db.flush()  # asigna nueva_factura.id, necesario para las lineas de detalle
-
-        items = [{"descripcion": d.descripcion, "cantidad": d.cantidad, "monto": d.monto} for d in datos.detalle]
-
-        if items:
-            # Camino nuevo: clasificacion por linea (bien/servicio/destino/cuenta) + asiento.
-            resultado_asiento = asesor.sugerir_asiento(items, iva_total=datos.impuestos, importe_total=datos.total)
-            for orden, (item, linea) in enumerate(zip(items, resultado_asiento["lineas_clasificadas"])):
-                db.add(FacturaDetalleLinea(
-                    factura_id=nueva_factura.id,
-                    orden=orden,
-                    descripcion=item["descripcion"],
-                    monto=item.get("monto") or 0,
-                    tipo=linea["tipo"],
-                    destino=linea["destino"],
-                    codigo_cuenta_sugerido=linea["codigo_cuenta"],
-                    confianza=linea["confianza"],
-                    justificacion=linea["justificacion"],
-                ))
-            sugerencia = None
-        else:
-            # Compatibilidad: el XML no trae <detalles> (ej. facturas de prueba antiguas)
-            # -- sin items no hay nada que clasificar por linea, cae a una sola cuenta.
-            sugerencia = asesor.sugerir(datos.ruc_proveedor, datos.razon_social, detalle=[], total=datos.total)
-            nueva_factura.cuenta_sugerida = sugerencia.codigo if sugerencia else None
-            nueva_factura.cuenta_sugerida_confianza = sugerencia.confianza if sugerencia else None
-            nueva_factura.cuenta_sugerida_justificacion = sugerencia.justificacion if sugerencia else None
-
-        db.commit()
+        resultado = procesar_factura_xml(db, contenido)
     finally:
         db.close()
+
+    if not resultado.ok:
+        return f"""<div class="alerta"><strong>{resultado.mensaje}</strong></div>"""
+
+    datos = resultado.datos
+    estado_proveedor = resultado.estado_proveedor
+    razon_social_registrada = resultado.razon_social_registrada
+    resultado_asiento = resultado.resultado_asiento
+    sugerencia = resultado.sugerencia
+    items = datos.detalle
 
     etiqueta = ETIQUETAS_ESTADO[estado_proveedor]
     clase_sello = f"sello-{estado_proveedor.value}"
@@ -145,16 +167,17 @@ async def subir_factura(archivo: UploadFile = File(...)):
             <div class="ledger-fila"><span class="ledger-label">Total</span><span class="ledger-valor destacado">$ {datos.total:.2f}</span></div>
             {fila_cuenta}
         </div>
-        <p style="margin-top: 16px;"><a href="/facturas" style="color: var(--accent); font-size: 13px;">Ir a la mesa de aprobacion &rarr;</a></p>
+        <p style="margin-top: 16px;"><a href="/facturas" style="color: var(--primary); font-size: 13px;">Ir a la mesa de aprobacion &rarr;</a></p>
     </div>
     """
 
 
+_BADGE_CANDIDATA = '<div class="criterio criterio-candidata">Candidata a auto-aprobacion: proveedor conocido y cuenta confirmada.</div>'
+
+
 def _criterio_proveedor(estado_proveedor, razon_social) -> tuple[str, str]:
-    if estado_proveedor == EstadoProveedor.ACTIVO:
-        return ("criterio-ok", f"Proveedor activo en el maestro ({razon_social}).")
-    if estado_proveedor == EstadoProveedor.INACTIVO:
-        return ("criterio-riesgo", f"Proveedor INACTIVO en el maestro ({razon_social}). Revisar antes de aprobar.")
+    if estado_proveedor == EstadoProveedor.REGISTRADO:
+        return ("criterio-ok", f"Proveedor registrado en el maestro ({razon_social}).")
     return ("criterio-alerta", "El RUC no esta registrado en el maestro de proveedores. Validar identidad antes de aprobar.")
 
 
@@ -183,36 +206,83 @@ def _criterios_evaluacion(estado_proveedor, razon_social, sugerencia):
     return f'<div class="criterios">{filas}</div>'
 
 
-def _renderizar_tarjeta_legacy(factura, cuentas_activas, estado_proveedor, razon_social, sugerencia_actual):
+def _boton_registrar_proveedor(factura, estado_proveedor) -> str:
+    """
+    Cuando el proveedor no esta en el maestro, la tarjeta de aprobacion enlaza a una
+    pagina aparte (/proveedores/nuevo) para registrarlo -- registrar un proveedor es
+    una accion propia, separada de aprobar una factura puntual.
+    """
+    if estado_proveedor != EstadoProveedor.NO_REGISTRADO:
+        return ""
+    ruc = urllib.parse.quote(factura.ruc_proveedor)
+    razon_social = urllib.parse.quote(factura.razon_social_emisor or "")
+    return f'<p><a class="btn btn-registrar" href="/proveedores/nuevo?ruc={ruc}&razon_social={razon_social}">Registrar proveedor &rarr;</a></p>'
+
+
+def _checkbox_lote(factura, elegibilidad) -> str:
+    """
+    Checkbox de seleccion para la aprobacion masiva. Vive FUERA del <form> de
+    aprobar/rechazar/guardar de la tarjeta (esos siguen siendo por factura) y se asocia
+    al formulario de lote de facturas.html via el atributo form="form-lote" -- asi puede
+    estar dentro del HTML de la tarjeta sin anidar un <form> dentro de otro.
+    """
+    if elegibilidad.elegible:
+        return f"""
+        <label class="lote-checkbox">
+            <input type="checkbox" name="factura_ids" value="{factura.id}" form="form-lote" checked>
+            Incluir en aprobación masiva
+        </label>
+        """
+    motivos = html.escape("; ".join(elegibilidad.motivos_bloqueo))
+    return f"""
+    <label class="lote-checkbox lote-checkbox-deshabilitado" title="{motivos}">
+        <input type="checkbox" disabled>
+        No elegible para lote &middot; {motivos}
+    </label>
+    """
+
+
+def _renderizar_tarjeta_legacy(factura, cuentas_activas, estado_proveedor, razon_social, sugerencia_actual, candidata: bool = False, elegibilidad=None):
     """Camino original: una sola cuenta para toda la factura (facturas sin <detalles> en el XML)."""
+    # factura.cuenta_final ya puede tener un valor aqui si la factura esta en estado
+    # "guardada" (ver guardar_factura_preliminar) -- en ese caso precede a la sugerencia
+    # de la IA, porque refleja una decision explicita de la contadora por enciam de la sugerencia automatica.
+    cuenta_precargada = factura.cuenta_final or factura.cuenta_sugerida
     opciones = "".join(
-        f'<option value="{c.codigo}" {"selected" if c.codigo == factura.cuenta_sugerida else ""}>{c.codigo} - {c.nombre}</option>'
+        f'<option value="{c.codigo}" {"selected" if c.codigo == cuenta_precargada else ""}>{c.codigo} - {c.nombre}</option>'
         for c in cuentas_activas
     )
     sugerida_texto = factura.cuenta_sugerida or "sin sugerencia"
+    badge_candidata = _BADGE_CANDIDATA if candidata else ""
     criterios_html = _criterios_evaluacion(estado_proveedor, razon_social, sugerencia_actual)
+    boton_registro = _boton_registrar_proveedor(factura, estado_proveedor)
+    checkbox_lote_html = _checkbox_lote(factura, elegibilidad) if elegibilidad is not None else ""
 
     return f"""
     <div class="tarjeta" id="factura-{factura.id}">
-        <div class="tarjeta-header">
-            <span class="tarjeta-nombre">{factura.ruc_proveedor}</span>
-            <span class="tarjeta-monto">$ {factura.total:.2f}</span>
+        <div class="tarjeta-nombre">{html.escape(razon_social)}</div>
+        <div class="tarjeta-meta">
+            <div>RUC {factura.ruc_proveedor}</div>
+            <div>Factura {factura.numero_factura}</div>
+            <div>{factura.fecha_emision} &middot; sugerida: {sugerida_texto}</div>
         </div>
-        <div class="tarjeta-meta">Factura {factura.numero_factura} &middot; {factura.fecha_emision} &middot; sugerida: {sugerida_texto}</div>
+        <div class="tarjeta-monto-fila"><span class="tarjeta-monto-grande">$ {factura.total:.2f}</span></div>
+        {badge_candidata}
+        {checkbox_lote_html}
         {criterios_html}
+        {boton_registro}
         <form hx-post="/facturas/{factura.id}/aprobar" hx-target="#factura-{factura.id}" hx-swap="outerHTML">
-            <div class="fila-usuario"><input type="text" name="usuario" placeholder="Tu nombre" required></div>
             <div class="fila-accion">
                 <select name="codigo_cuenta">{opciones}</select>
                 <button type="submit" class="btn btn-aprobar">Aprobar</button>
+                <button type="button" class="btn btn-guardar" hx-post="/facturas/{factura.id}/guardar" hx-target="#factura-{factura.id}" hx-swap="outerHTML">Guardar</button>
                 <button type="button" class="btn btn-rechazar" onclick="alternarMotivo({factura.id})">Rechazar</button>
             </div>
         </form>
         <div class="rechazo-motivo" id="motivo-{factura.id}">
             <form hx-post="/facturas/{factura.id}/rechazar" hx-target="#factura-{factura.id}" hx-swap="outerHTML">
                 <textarea name="motivo" placeholder="Motivo del rechazo (obligatorio)" required></textarea>
-                <div class="fila-usuario">
-                    <input type="text" name="usuario" placeholder="Tu nombre" required>
+                <div class="fila-accion">
                     <button type="submit" class="btn btn-rechazar">Confirmar rechazo</button>
                 </div>
             </form>
@@ -253,8 +323,11 @@ def _renderizar_linea_asiento(linea, cuentas_por_destino):
     else:
         opciones_cuentas = [c for lista in cuentas_por_destino.values() for c in lista]
 
+    # codigo_cuenta_final puede venir de un guardado preliminar (ver
+    # guardar_factura_preliminar) -- una eleccion explicita precede a la sugerencia de la IA.
+    cuenta_precargada = linea.codigo_cuenta_final or linea.codigo_cuenta_sugerido
     opciones_html = '<option value="">-- seleccionar cuenta --</option>' + "".join(
-        f'<option value="{c.codigo}" {"selected" if c.codigo == linea.codigo_cuenta_sugerido else ""}>{c.codigo} - {c.nombre}</option>'
+        f'<option value="{c.codigo}" {"selected" if c.codigo == cuenta_precargada else ""}>{c.codigo} - {c.nombre}</option>'
         for c in opciones_cuentas
     )
 
@@ -275,8 +348,9 @@ def _renderizar_linea_asiento(linea, cuentas_por_destino):
     """
 
 
-def _renderizar_tarjeta_multilinea(factura, lineas, cuentas_por_destino, estado_proveedor, razon_social):
+def _renderizar_tarjeta_multilinea(factura, lineas, cuentas_por_destino, estado_proveedor, razon_social, candidata: bool = False, elegibilidad=None):
     """Camino nuevo: una cuenta por linea de detalle + IVA y cuentas por pagar calculados."""
+    badge_candidata = _BADGE_CANDIDATA if candidata else ""
     clase_prov, texto_prov = _criterio_proveedor(estado_proveedor, razon_social)
     criterios_html = f'<div class="criterios"><div class="criterio {clase_prov}">{texto_prov}</div></div>'
 
@@ -295,28 +369,35 @@ def _renderizar_tarjeta_multilinea(factura, lineas, cuentas_por_destino, estado_
     <div class="linea-fija">Cuentas por pagar ({CUENTAS_POR_PAGAR_PROVEEDORES_CODIGO} - {CUENTAS_POR_PAGAR_PROVEEDORES_NOMBRE}) &middot; $ {asiento['total_haber']:.2f}</div>
     """
 
+    boton_registro = _boton_registrar_proveedor(factura, estado_proveedor)
+    checkbox_lote_html = _checkbox_lote(factura, elegibilidad) if elegibilidad is not None else ""
+
     return f"""
     <div class="tarjeta" id="factura-{factura.id}">
-        <div class="tarjeta-header">
-            <span class="tarjeta-nombre">{factura.ruc_proveedor}</span>
-            <span class="tarjeta-monto">$ {factura.total:.2f}</span>
+        <div class="tarjeta-nombre">{html.escape(razon_social)}</div>
+        <div class="tarjeta-meta">
+            <div>RUC {factura.ruc_proveedor}</div>
+            <div>Factura {factura.numero_factura}</div>
+            <div>{factura.fecha_emision} &middot; {len(lineas)} linea(s) de detalle</div>
         </div>
-        <div class="tarjeta-meta">Factura {factura.numero_factura} &middot; {factura.fecha_emision} &middot; {len(lineas)} linea(s) de detalle</div>
+        <div class="tarjeta-monto-fila"><span class="tarjeta-monto-grande">$ {factura.total:.2f}</span></div>
+        {badge_candidata}
+        {checkbox_lote_html}
         {criterios_html}
+        {boton_registro}
         <form hx-post="/facturas/{factura.id}/aprobar" hx-target="#factura-{factura.id}" hx-swap="outerHTML">
-            <div class="fila-usuario"><input type="text" name="usuario" placeholder="Tu nombre" required></div>
             {lineas_html}
             {fijas_html}
             <div class="fila-accion">
                 <button type="submit" class="btn btn-aprobar">Aprobar</button>
+                <button type="button" class="btn btn-guardar" hx-post="/facturas/{factura.id}/guardar" hx-target="#factura-{factura.id}" hx-swap="outerHTML">Guardar</button>
                 <button type="button" class="btn btn-rechazar" onclick="alternarMotivo({factura.id})">Rechazar</button>
             </div>
         </form>
         <div class="rechazo-motivo" id="motivo-{factura.id}">
             <form hx-post="/facturas/{factura.id}/rechazar" hx-target="#factura-{factura.id}" hx-swap="outerHTML">
                 <textarea name="motivo" placeholder="Motivo del rechazo (obligatorio)" required></textarea>
-                <div class="fila-usuario">
-                    <input type="text" name="usuario" placeholder="Tu nombre" required>
+                <div class="fila-accion">
                     <button type="submit" class="btn btn-rechazar">Confirmar rechazo</button>
                 </div>
             </form>
@@ -325,12 +406,10 @@ def _renderizar_tarjeta_multilinea(factura, lineas, cuentas_por_destino, estado_
     """
 
 
-def _renderizar_lista_pendientes(db):
-    pendientes = obtener_facturas_pendientes(db)
+def _construir_contexto_cuentas(db):
+    """Cuentas activas + su agrupacion por destino, reusado por cada tarjeta pendiente
+    (lista completa en /facturas, o una sola al re-renderizarla tras un guardado)."""
     cuentas_activas = obtener_cuentas_activas(db)
-    if not pendientes:
-        return '<div class="vacio">No hay facturas pendientes de aprobacion.</div>'
-
     cuentas_por_codigo = {c.codigo: c for c in cuentas_activas}
     cuentas_por_destino = filtrar_catalogo_por_destino(
         [{"codigo": c.codigo, "nombre": c.nombre} for c in cuentas_activas]
@@ -341,36 +420,207 @@ def _renderizar_lista_pendientes(db):
         destino: [cuentas_por_codigo[c["codigo"]] for c in lista]
         for destino, lista in cuentas_por_destino.items()
     }
+    return cuentas_activas, cuentas_por_codigo, cuentas_por_destino
 
-    tarjetas = []
-    for factura in pendientes:
-        estado_proveedor, razon_social = validar_proveedor(db, factura.ruc_proveedor)
-        razon_social = razon_social or factura.ruc_proveedor
-        lineas = obtener_lineas_detalle(db, factura.id)
 
-        if lineas:
-            tarjetas.append(_renderizar_tarjeta_multilinea(factura, lineas, cuentas_por_destino, estado_proveedor, razon_social))
-        else:
-            sugerencia_actual = _sugerencia_guardada(factura, cuentas_por_codigo)
-            tarjetas.append(_renderizar_tarjeta_legacy(factura, cuentas_activas, estado_proveedor, razon_social, sugerencia_actual))
+def _renderizar_tarjeta_pendiente(db, factura, cuentas_activas, cuentas_por_codigo, cuentas_por_destino) -> str:
+    estado_proveedor, razon_social = validar_proveedor(db, factura.ruc_proveedor)
+    razon_social = razon_social or factura.razon_social_emisor or factura.ruc_proveedor
+    lineas = obtener_lineas_detalle(db, factura.id)
+   
 
-    return "".join(tarjetas)
+    if lineas:
+        cuentas_confianza = [(l.codigo_cuenta_final or l.codigo_cuenta_sugerido, l.confianza) for l in lineas]
+    else:
+        cuentas_confianza = [(factura.cuenta_final or factura.cuenta_sugerida, factura.cuenta_sugerida_confianza)]
+    candidata = es_candidata_auto_aprobacion(db, factura.ruc_proveedor, estado_proveedor, cuentas_confianza)
+    elegibilidad = evaluar_elegibilidad_lote(db, factura, estado_proveedor, lineas)
+
+    if lineas:
+        return _renderizar_tarjeta_multilinea(
+            factura, lineas, cuentas_por_destino, estado_proveedor, razon_social, candidata, elegibilidad
+        )
+    sugerencia_actual = _sugerencia_guardada(factura, cuentas_por_codigo)
+    return _renderizar_tarjeta_legacy(
+        factura, cuentas_activas, estado_proveedor, razon_social, sugerencia_actual, candidata, elegibilidad
+    )
+
+
+def _renderizar_lista_pendientes(db, pendientes):
+    if not pendientes:
+        return '<div class="vacio">No hay facturas pendientes de aprobacion.</div>'
+
+    cuentas_activas, cuentas_por_codigo, cuentas_por_destino = _construir_contexto_cuentas(db)
+    return "".join(
+        _renderizar_tarjeta_pendiente(db, factura, cuentas_activas, cuentas_por_codigo, cuentas_por_destino)
+        for factura in pendientes
+    )
+
+
+def _parsear_filtros_facturas(
+    proveedor: str, cuenta: str, fecha_desde: str, fecha_hasta: str, monto_min: str, monto_max: str
+) -> FiltrosFacturas:
+    def _fecha(valor: str):
+        try:
+            return date.fromisoformat(valor) if valor else None
+        except ValueError:
+            return None
+
+    def _monto(valor: str):
+        try:
+            return Decimal(valor) if valor else None
+        except (InvalidOperation, ValueError):
+            return None
+
+    return FiltrosFacturas(
+        proveedor=proveedor.strip() or None,
+        cuenta=cuenta.strip() or None,
+        fecha_desde=_fecha(fecha_desde),
+        fecha_hasta=_fecha(fecha_hasta),
+        monto_min=_monto(monto_min),
+        monto_max=_monto(monto_max),
+    )
+
+#
 
 
 @app.get("/facturas", response_class=HTMLResponse)
-def ver_facturas_pendientes(request: Request):
+def ver_facturas_pendientes(
+    request: Request,
+    proveedor: str = "",
+    cuenta: str = "",
+    fecha_desde: str = "",
+    fecha_hasta: str = "",
+    monto_min: str = "",
+    monto_max: str = "",
+    lote_aprobadas: int | None = None,
+    lote_omitidas: int | None = None,
+):
+    filtros = _parsear_filtros_facturas(proveedor, cuenta, fecha_desde, fecha_hasta, monto_min, monto_max)
+
     db = SessionLocal()
     try:
-        contenido_lista = _renderizar_lista_pendientes(db)
+        pendientes = obtener_facturas_pendientes(db)
+        pendientes_filtradas = filtrar_facturas_pendientes(db, pendientes, filtros)
+        resumen = {"cantidad": len(pendientes_filtradas), "cantidad_total": len(pendientes)}
+        contenido_lista = _renderizar_lista_pendientes(db, pendientes_filtradas)
     finally:
         db.close()
-    return templates.TemplateResponse(request, "facturas.html", {"contenido_lista": contenido_lista})
+    return templates.TemplateResponse(
+        request,
+        "facturas.html",
+        {
+            "contenido_lista": contenido_lista,
+            "resumen": resumen,
+            "filtros": {
+                "proveedor": proveedor,
+                "cuenta": cuenta,
+                "fecha_desde": fecha_desde,
+                "fecha_hasta": fecha_hasta,
+                "monto_min": monto_min,
+                "monto_max": monto_max,
+            },
+            "lote_aprobadas": lote_aprobadas,
+            "lote_omitidas": lote_omitidas,
+        },
+    )
+
+
+@app.post("/facturas/aprobar-lote", response_class=HTMLResponse)
+async def aprobar_lote_facturas(request: Request):
+    """
+    Aprobacion masiva (seleccion multiple): recibe los factura_ids marcados en la
+    mesa de aprobacion y los aprueba solo si, revalidados ahora mismo en el servidor,
+    siguen pasando evaluar_elegibilidad_lote -- ver app/core/aprobaciones.py para las
+    reglas de seguridad. Nunca confia en que el checkbox marcado en el navegador siga
+    siendo valido.
+    """
+    usuario = request.state.usuario["nombre_usuario"]
+    form = await request.form()
+    factura_ids = [int(v) for v in form.getlist("factura_ids")]
+
+    db = SessionLocal()
+    try:
+        if not factura_ids:
+            resultado = {"aprobadas": [], "omitidas": []}
+        else:
+            resultado = aprobar_lote(db, factura_ids, usuario)
+    finally:
+        db.close()
+
+    params = urllib.parse.urlencode({
+        "lote_aprobadas": len(resultado["aprobadas"]),
+        "lote_omitidas": len(resultado["omitidas"]),
+    })
+    return RedirectResponse(url=f"/facturas?{params}", status_code=303)
+
+
+def _formulario_registrar_proveedor(ruc: str, razon_social: str, error: str | None = None) -> str:
+    error_html = f'<div class="resultado-accion resultado-error">{html.escape(error)}</div>' if error else ""
+    return f"""
+    {error_html}
+    <form method="post" action="/proveedores/nuevo">
+        <div class="fila-usuario">
+            <label for="ruc">RUC</label>
+            <input type="text" id="ruc" name="ruc" value="{html.escape(ruc)}" maxlength="13" required>
+        </div>
+        <div class="fila-usuario">
+            <label for="razon_social">Razon social</label>
+            <input type="text" id="razon_social" name="razon_social" value="{html.escape(razon_social)}" required>
+        </div>
+        <div class="fila-usuario">
+            <label for="correo">Correo (opcional)</label>
+            <input type="email" id="correo" name="correo">
+        </div>
+        <div class="fila-accion">
+            <button type="submit" class="btn btn-aprobar">Registrar proveedor</button>
+        </div>
+    </form>
+    """
+
+
+@app.get("/proveedores/nuevo", response_class=HTMLResponse)
+def formulario_nuevo_proveedor(request: Request, ruc: str = "", razon_social: str = ""):
+    contenido = _formulario_registrar_proveedor(ruc, razon_social)
+    return templates.TemplateResponse(request, "proveedor_nuevo.html", {"contenido": contenido})
+
+
+@app.post("/proveedores/nuevo", response_class=HTMLResponse)
+async def registrar_nuevo_proveedor(request: Request):
+    form = await request.form()
+    ruc = (form.get("ruc") or "").strip()
+    razon_social = (form.get("razon_social") or "").strip()
+    correo = (form.get("correo") or "").strip() or None
+
+    error = None
+    if not razon_social:
+        error = "Debes indicar la razon social del proveedor."
+    elif not ruc_estructuralmente_valido(ruc):
+        error = "El RUC debe tener 13 digitos numericos."
+
+    db = SessionLocal()
+    try:
+        if error is None:
+            estado_proveedor, _ = validar_proveedor(db, ruc)
+            if estado_proveedor == EstadoProveedor.REGISTRADO:
+                error = f"El RUC {ruc} ya esta registrado en el maestro."
+
+        if error:
+            contenido = _formulario_registrar_proveedor(ruc, razon_social, error=error)
+            return templates.TemplateResponse(request, "proveedor_nuevo.html", {"contenido": contenido})
+
+        registrar_proveedor(db, ruc, razon_social, correo=correo)
+        db.commit()
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/facturas", status_code=303)
 
 
 @app.post("/facturas/{factura_id}/aprobar", response_class=HTMLResponse)
 async def aprobar(request: Request, factura_id: int):
     form = await request.form()
-    usuario = form.get("usuario", "")
+    usuario = request.state.usuario["nombre_usuario"]
 
     # Una tarjeta multi-linea manda varios campos "codigo_cuenta_linea_<id>" (uno por
     # linea de detalle); una tarjeta legacy manda un solo "codigo_cuenta". El nombre de
@@ -389,27 +639,65 @@ async def aprobar(request: Request, factura_id: int):
             else:
                 codigo_cuenta = form.get("codigo_cuenta", "")
                 factura = aprobar_factura(db, factura_id, usuario, codigo_cuenta)
-            return f"""<div class="resultado-accion resultado-aprobada"><strong>Aprobada</strong> por {usuario} &middot; cuenta final: {factura.cuenta_final}. <a href="/aprobadas">Ir a enviar a SAP &rarr;</a></div>"""
+            return f"""<div class="resultado-accion resultado-aprobada"><strong>Aprobada</strong> por {html.escape(usuario)} &middot; cuenta final: {html.escape(factura.cuenta_final or "")}. <a href="/aprobadas">Ir a enviar a SAP &rarr;</a></div>"""
         except AccionInvalidaError as e:
-            return f'<div class="resultado-accion resultado-error"><strong>No se pudo aprobar.</strong> {e}</div>'
+            return f'<div class="resultado-accion resultado-error"><strong>No se pudo aprobar.</strong> {html.escape(str(e))}</div>'
     finally:
         db.close()
 
 
 @app.post("/facturas/{factura_id}/rechazar", response_class=HTMLResponse)
-def rechazar(factura_id: int, usuario: str = Form(...), motivo: str = Form(...)):
+def rechazar(request: Request, factura_id: int, motivo: str = Form(...)):
+    usuario = request.state.usuario["nombre_usuario"]
     db = SessionLocal()
     try:
         try:
             factura = rechazar_factura(db, factura_id, usuario, motivo)
-            return f"""<div class="resultado-accion resultado-rechazada"><strong>Rechazada</strong> por {usuario}. Motivo: {motivo}</div>"""
+            return f"""<div class="resultado-accion resultado-rechazada"><strong>Rechazada</strong> por {html.escape(usuario)}. Motivo: {html.escape(motivo)}</div>"""
         except AccionInvalidaError as e:
-            return f'<div class="resultado-accion resultado-error"><strong>No se pudo rechazar.</strong> {e}</div>'
+            return f'<div class="resultado-accion resultado-error"><strong>No se pudo rechazar.</strong> {html.escape(str(e))}</div>'
+    finally:
+        db.close()
+
+
+@app.post("/facturas/{factura_id}/guardar", response_class=HTMLResponse)
+async def guardar(request: Request, factura_id: int):
+    """
+    Guardado preliminar (ver guardar_factura_preliminar): no cierra el ciclo de la
+    factura, asi que en vez de reemplazar la tarjeta por un mensaje de resultado como
+    aprobar/rechazar, se re-renderiza la misma tarjeta -- sigue en la mesa de
+    aprobacion, ahora con la cuenta y el nombre que se acaban de guardar precargados.
+    """
+    form = await request.form()
+    usuario = request.state.usuario["nombre_usuario"]
+    codigo_cuenta = form.get("codigo_cuenta", "")
+    codigos_por_linea = {
+        int(clave.removeprefix("codigo_cuenta_linea_")): valor
+        for clave, valor in form.items()
+        if clave.startswith("codigo_cuenta_linea_")
+    }
+
+    db = SessionLocal()
+    try:
+        try:
+            factura = guardar_factura_preliminar(db, factura_id, usuario, codigo_cuenta, codigos_por_linea)
+            cuentas_activas, cuentas_por_codigo, cuentas_por_destino = _construir_contexto_cuentas(db)
+            return _renderizar_tarjeta_pendiente(db, factura, cuentas_activas, cuentas_por_codigo, cuentas_por_destino)
+        except AccionInvalidaError as e:
+            return f'<div class="resultado-accion resultado-error"><strong>No se pudo guardar.</strong> {html.escape(str(e))}</div>'
     finally:
         db.close()
 
 
 def _renderizar_tarjeta_aprobada(factura):
+    # Sin acciones por tarjeta a proposito: la factura ya se aprobo en /facturas (Pendientes),
+    # asi que aqui solo se muestra como referencia -- la unica accion de esta pantalla es el
+    # boton de exportar a Excel arriba de la lista (ver aprobadas.html). El envio a SAP sigue
+    # existiendo en el backend (POST /facturas/{id}/enviar-sap) para cuando se retome ese flujo,
+    # solo se quito el boton de esta vista.
+    etiqueta_exportada = (
+        '<span class="badge badge-gris">Ya exportada</span>' if factura.exportado_a_excel else ""
+    )
     return f"""
     <div class="tarjeta" id="aprobada-{factura.id}">
         <div class="tarjeta-header">
@@ -417,12 +705,7 @@ def _renderizar_tarjeta_aprobada(factura):
             <span class="tarjeta-monto">$ {factura.total:.2f}</span>
         </div>
         <div class="tarjeta-meta">Factura {factura.numero_factura} &middot; cuenta: {factura.cuenta_final}</div>
-        <form hx-post="/facturas/{factura.id}/enviar-sap" hx-target="#aprobada-{factura.id}" hx-swap="outerHTML">
-            <div class="fila-usuario"><input type="text" name="usuario" placeholder="Tu nombre" required></div>
-            <div class="fila-accion">
-                <button type="submit" class="btn btn-aprobar">Enviar a SAP</button>
-            </div>
-        </form>
+        {etiqueta_exportada}
     </div>
     """
 
@@ -435,17 +718,56 @@ def _renderizar_lista_aprobadas(db):
 
 
 @app.get("/aprobadas", response_class=HTMLResponse)
-def ver_facturas_aprobadas(request: Request):
+def ver_facturas_aprobadas(request: Request, sin_exportar: bool = False):
     db = SessionLocal()
     try:
         contenido_lista = _renderizar_lista_aprobadas(db)
+        cantidad_para_exportar = len(obtener_filas_para_exportar(db))
     finally:
         db.close()
-    return templates.TemplateResponse(request, "aprobadas.html", {"contenido_lista": contenido_lista})
+    return templates.TemplateResponse(
+        request,
+        "aprobadas.html",
+        {
+            "contenido_lista": contenido_lista,
+            "cantidad_para_exportar": cantidad_para_exportar,
+            "sin_exportar": sin_exportar,
+        },
+    )
+
+
+@app.post("/aprobadas/exportar-excel")
+def exportar_excel_aprobadas(request: Request):
+    """
+    Genera el reporte Excel (dashboard + resumen + detalle) de facturas aprobadas que
+    todavia no se han exportado, y las marca como exportadas -- ver
+    app/core/reportes_excel.py. No toca el estado de aprobacion ni el envio a SAP: es
+    puramente un reporte de lo que ya se aprobo.
+    """
+    usuario = request.state.usuario["nombre_usuario"]
+    db = SessionLocal()
+    try:
+        filas = obtener_filas_para_exportar(db)
+        if not filas:
+            return RedirectResponse(url="/aprobadas?sin_exportar=true", status_code=303)
+
+        buffer = generar_libro_excel(filas)
+        factura_ids = sorted({f.factura_id for f in filas})
+        marcar_como_exportadas(db, factura_ids, usuario)
+    finally:
+        db.close()
+
+    nombre_archivo = f"reporte_facturas_aprobadas_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx"
+    return StreamingResponse(
+        buffer,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{nombre_archivo}"'},
+    )
 
 
 @app.post("/facturas/{factura_id}/enviar-sap", response_class=HTMLResponse)
-def enviar_sap(factura_id: int, usuario: str = Form(...)):
+def enviar_sap(request: Request, factura_id: int):
+    usuario = request.state.usuario["nombre_usuario"]
     db = SessionLocal()
     try:
         try:
@@ -457,11 +779,32 @@ def enviar_sap(factura_id: int, usuario: str = Form(...)):
         db.close()
 
 
+@app.post("/facturas/{factura_id}/validar-sri", response_class=HTMLResponse)
+def validar_sri(request: Request, factura_id: int):
+    """
+    Mockup para evaluar si conviene conectar al webservice real de Autorizacion del
+    SRI: hoy solo consulta un simulador (ver app/core/validacion_sri.py). No cambia el
+    estado de la factura, solo deja constancia en el historial de que se consulto.
+    """
+    usuario = request.state.usuario["nombre_usuario"]
+    db = SessionLocal()
+    try:
+        try:
+            factura, estado_sri = validar_en_sri(db, factura_id, usuario)
+            return f'<div class="resultado-accion resultado-aprobada"><strong>{estado_sri}</strong> &middot; clave de acceso: {factura.clave_acceso}</div>'
+        except ValidacionInvalidaError as e:
+            return f'<div class="resultado-accion resultado-error"><strong>No se pudo consultar el SRI.</strong> {e}</div>'
+    finally:
+        db.close()
+
+
 BADGES_ACCION = {
     "aprobada": ("badge-exito", "Aprobada"),
     "registrada_sap": ("badge-exito", "Registrada en SAP"),
+    "consultada_sri": ("badge-neutro", "Consultada en SRI"),
     "rechazada": ("badge-peligro", "Rechazada"),
     "error_envio_sap": ("badge-peligro", "Error al enviar a SAP"),
+    "guardada": ("badge-neutro", "Guardada"),
 }
 BADGE_DEFECTO = ("badge-neutro", None)
 
@@ -528,3 +871,221 @@ def ver_historial(request: Request, pagina: int = 1):
     finally:
         db.close()
     return templates.TemplateResponse(request, "historial.html", {"contenido_lista": contenido_lista})
+
+
+# ---------- login / logout ----------
+
+@app.get("/login", response_class=HTMLResponse)
+def formulario_login(request: Request):
+    return templates.TemplateResponse(request, "login.html", {"error": None})
+
+
+@app.post("/login", response_class=HTMLResponse)
+async def procesar_login(request: Request):
+    form = await request.form()
+    nombre_usuario = (form.get("usuario") or "").strip()
+    contrasena = form.get("contrasena") or ""
+
+    db = SessionLocal()
+    try:
+        usuario = auth.autenticar_usuario(db, nombre_usuario, contrasena)
+    finally:
+        db.close()
+
+    if usuario is None:
+        return templates.TemplateResponse(
+            request,
+            "login.html",
+            {"error": "Usuario o contraseña incorrectos."},
+            status_code=401,
+        )
+
+    respuesta = RedirectResponse(url="/panel-vigilancia", status_code=303)
+    respuesta.set_cookie(
+        auth.COOKIE_NAME,
+        auth.crear_cookie_sesion(usuario),
+        httponly=True,
+        samesite="lax",
+        max_age=auth.MAX_EDAD_SESION_SEGUNDOS,
+    )
+    return respuesta
+
+
+@app.post("/logout")
+def cerrar_sesion():
+    respuesta = RedirectResponse(url="/login", status_code=303)
+    respuesta.delete_cookie(auth.COOKIE_NAME)
+    return respuesta
+
+
+# ---------- panel de vigilancia ----------
+
+BADGES_ESTADO_VIGILANTE = {
+    "en_espera": ("badge-gris", "En espera"),
+    "vigilando": ("badge-azul", "Vigilando"),
+    "procesando": ("badge-ambar", "Procesando"),
+    "error": ("badge-rojo", "Error"),
+}
+
+
+@app.get("/panel-vigilancia", response_class=HTMLResponse)
+def ver_panel_vigilancia(request: Request):
+    db = SessionLocal()
+    try:
+        estado = vigilante_carpeta.leer_estado(db)
+        estado_actual = estado.estado
+        carpeta_monitoreada = estado.carpeta_monitoreada or vigilante_carpeta.CARPETA_POR_DEFECTO
+        mensaje_error = estado.mensaje_error
+    finally:
+        db.close()
+
+    clase_badge, etiqueta_badge = BADGES_ESTADO_VIGILANTE.get(estado_actual, ("badge-gris", estado_actual))
+    pendientes = vigilante_carpeta.contar_pendientes(carpeta_monitoreada)
+    procesados_hoy = vigilante_carpeta.contar_procesados_hoy(carpeta_monitoreada)
+    ultimos_errores = vigilante_carpeta.listar_ultimos_errores(carpeta_monitoreada)
+
+    return templates.TemplateResponse(
+        request,
+        "panel_vigilancia.html",
+        {
+            "estado_actual": estado_actual,
+            "clase_badge": clase_badge,
+            "etiqueta_badge": etiqueta_badge,
+            "mensaje_error": mensaje_error,
+            "carpeta_monitoreada": carpeta_monitoreada,
+            "pendientes": pendientes,
+            "procesados_hoy": procesados_hoy,
+            "ultimos_errores": ultimos_errores,
+            "puede_iniciar": estado_actual in ("en_espera", "error"),
+        },
+    )
+
+
+@app.post("/admin/elegir-carpeta")
+def elegir_carpeta(carpeta_actual: str = Form("")):
+    """
+    Abre el explorador de carpetas nativo de Windows en el propio equipo donde
+    corre el servidor y devuelve la ruta elegida como JSON, para que el JS del
+    panel la ponga en el campo de texto sin que la persona tenga que escribirla
+    a mano. Pensado para uso local (navegador y servidor en la misma maquina) --
+    no tiene sentido en un despliegue donde el servidor y quien lo usa estan en
+    equipos distintos, ya el dialogo se abriria en la pantalla del servidor.
+
+    Se importa tkinter aqui adentro (no arriba del archivo) para no forzar esa
+    dependencia del sistema en el resto de la app si algun dia corre sin entorno
+    grafico. Si la persona cancela el dialogo, devuelve carpeta vacia.
+    """
+    import tkinter as tk
+    from tkinter import filedialog
+
+    inicio = vigilante_carpeta.CARPETA_POR_DEFECTO
+    if carpeta_actual and Path(carpeta_actual).is_dir():
+        inicio = carpeta_actual
+
+    raiz = tk.Tk()
+    raiz.withdraw()
+    raiz.attributes("-topmost", True)
+    try:
+        carpeta = filedialog.askdirectory(
+            initialdir=inicio if Path(inicio).is_dir() else None,
+            title="Elegir carpeta a vigilar",
+        )
+    finally:
+        raiz.destroy()
+
+    return {"carpeta": carpeta or ""}
+
+
+@app.post("/admin/revisar-carpeta")
+async def revisar_carpeta(request: Request):
+    """
+    Inicia el hilo de vigilancia de carpeta y deja registro de quien lo hizo,
+    cuando, y con que resultado -- ver HistorialVigilancia. Si ya estaba
+    vigilando otra carpeta, la detiene primero para poder cambiar de ruta sin
+    que la persona tenga que apretar "Detener" aparte.
+
+    La ruta la escribe la persona en el panel (campo "carpeta"); si la deja vacia,
+    se usa la ultima carpeta guardada o CARPETA_POR_DEFECTO (ver iniciar_monitoreo).
+    """
+    usuario = request.state.usuario
+    form = await request.form()
+    carpeta_ingresada = (form.get("carpeta") or "").strip()
+    if vigilante_carpeta.esta_activo():
+        vigilante_carpeta.detener_monitoreo()
+    ok, mensaje = vigilante_carpeta.iniciar_monitoreo(carpeta_ingresada or None)
+
+    db = SessionLocal()
+    try:
+        if ok:
+            # El hilo tambien guarda esto en su primera vuelta, pero eso pasa en
+            # otro hilo -- lo escribimos ya mismo para que el panel refleje la
+            # carpeta elegida sin esperar esa primera vuelta.
+            estado = vigilante_carpeta.leer_estado(db)
+            estado.carpeta_monitoreada = carpeta_ingresada or estado.carpeta_monitoreada or vigilante_carpeta.CARPETA_POR_DEFECTO
+        db.add(
+            HistorialVigilancia(
+                usuario=usuario["nombre_usuario"],
+                accion="iniciar_monitoreo",
+                resultado="ok" if ok else "error",
+                mensaje=mensaje,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/panel-vigilancia", status_code=303)
+
+
+@app.post("/admin/detener-carpeta")
+async def detener_carpeta(request: Request):
+    """Detiene el hilo de vigilancia de carpeta si esta activo, para poder cambiar
+    de ruta o simplemente dejar de procesar."""
+    usuario = request.state.usuario
+    ok, mensaje = vigilante_carpeta.detener_monitoreo()
+
+    db = SessionLocal()
+    try:
+        db.add(
+            HistorialVigilancia(
+                usuario=usuario["nombre_usuario"],
+                accion="detener_monitoreo",
+                resultado="ok" if ok else "error",
+                mensaje=mensaje,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/panel-vigilancia", status_code=303)
+
+
+@app.post("/admin/reintentar-archivo")
+async def reintentar_archivo_error(request: Request):
+    """Mueve un archivo de errores/ de vuelta a la carpeta de entrada para que el
+    hilo de vigilancia lo procese de nuevo en la proxima pasada."""
+    usuario = request.state.usuario
+    form = await request.form()
+    nombre_archivo = (form.get("nombre_archivo") or "").strip()
+
+    db = SessionLocal()
+    try:
+        estado = vigilante_carpeta.leer_estado(db)
+        carpeta_monitoreada = estado.carpeta_monitoreada or vigilante_carpeta.CARPETA_POR_DEFECTO
+        ok = vigilante_carpeta.reintentar_archivo(carpeta_monitoreada, nombre_archivo) if nombre_archivo else False
+        db.add(
+            HistorialVigilancia(
+                usuario=usuario["nombre_usuario"],
+                accion="reintentar_archivo",
+                resultado="ok" if ok else "error",
+                mensaje=nombre_archivo or "(sin nombre de archivo)",
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/panel-vigilancia", status_code=303)
+
+

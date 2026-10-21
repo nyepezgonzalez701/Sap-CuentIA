@@ -11,7 +11,7 @@ REGLAS_POR_RUC = {
 
 CUENTA_GENERICA_CODIGO = "5.1.99"  # Gastos por clasificar
 # Ejemplo de Simulador con IA falta coenctar al flujo real 
-
+# Cuenta contable generica para proveedores no reconocidos, con confianza baja. La idea es que la IA aprenda de los casos reales y vaya mejorando sus sugerencias con el tiempo.
 
 class SugeridorSimulado(SugeridorCuenta):
     def __init__(self, db: Session):
@@ -20,7 +20,7 @@ class SugeridorSimulado(SugeridorCuenta):
     def sugerir(self, ruc_proveedor: str, razon_social: str) -> SugerenciaCuenta | None:
         codigo_propuesto = REGLAS_POR_RUC.get(ruc_proveedor, CUENTA_GENERICA_CODIGO)
         confianza = "alta" if ruc_proveedor in REGLAS_POR_RUC else "baja"
-
+# en esta seccion  bsuca que la cuenta este activa y propone la cuenta contable
         cuenta = (
             self.db.query(CuentaContable)
             .filter(

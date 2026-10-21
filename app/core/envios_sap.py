@@ -2,7 +2,9 @@
 
 from app.core.models import Factura, HistorialAccion
 from app.adaptadores.sap.simulador import SimuladorSAP
-
+#Clase de Envio de Facturas a SAP, con validaciones de estado y registro de historial
+#Es una calse que esta temporalmente en el core, pero se puede mover a un adaptador de SAP real mas adelante
+#Una clase que simula el envio a SAP, para pruebas y desarrollo sin necesidad de un SAP real(ya no se ve a cocentar al sap rel pro motivos de autorizacion de credeciales)
 
 class EnvioInvalidoError(Exception):
     pass
@@ -38,6 +40,9 @@ def enviar_a_sap(db: Session, factura_id: int, usuario: str) -> Factura:
         total=float(factura.total),
     )
 
+ 
+# La refenecia de Sap registardo usuario y el estado de la factura
+
     if resultado.exitoso:
         factura.estado = "registrada"
         factura.referencia_sap = resultado.referencia
@@ -54,6 +59,8 @@ def enviar_a_sap(db: Session, factura_id: int, usuario: str) -> Factura:
             usuario=usuario.strip(),
             motivo=resultado.mensaje,
         )
+# ejemplo de como se regsstra el historial
+
 
     db.add(historial)
     db.commit()

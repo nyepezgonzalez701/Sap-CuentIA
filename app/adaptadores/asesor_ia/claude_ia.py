@@ -106,7 +106,7 @@ def sugerir_cuenta_contable(factura: dict, catalogo: list[dict]) -> dict:
         client = anthropic.Anthropic()
         response = client.messages.create(
             model=MODELO,
-            max_tokens=1024,
+            max_tokens=824,
             system=[
                 {
                     "type": "text",
@@ -406,7 +406,7 @@ def clasificar_items_factura(items: list[dict], catalogo: list[dict]) -> list[di
         client = anthropic.Anthropic()
         response = client.messages.create(
             model=MODELO,
-            max_tokens=4096,
+            max_tokens=3096,
             system=[
                 {
                     "type": "text",
@@ -461,7 +461,7 @@ def clasificar_items_factura(items: list[dict], catalogo: list[dict]) -> list[di
 
         codigos_validos_destino = codigos_por_destino.get(destino)
         if not codigos_validos_destino or codigo not in codigos_validos_destino:
-            # Defensa adicional: el schema ya restringe los valores posibles, pero ademas
+            
             # se verifica que el codigo pertenezca al catalogo del destino declarado --
             # nunca se confia ciegamente en que la IA no mezclo codigo y destino.
             resultado_final.append(dict(_LINEA_VACIA))
@@ -470,7 +470,7 @@ def clasificar_items_factura(items: list[dict], catalogo: list[dict]) -> list[di
         confianza = linea.get("confianza")
         if confianza not in ("alta", "media", "baja"):
             confianza = "baja"
-
+# justificacion es . ppuede ser non--- la IA no le da importancia a la justificacion, pero se incluye para que la pantalla de aprobacion pueda mostrarla si la IA la da.|
         resultado_final.append({
             "tipo": tipo if tipo in ("bien", "servicio") else None,
             "destino": destino,

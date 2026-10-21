@@ -1,0 +1,96 @@
+{% extends "base.html" %}
+{% block title %}Vigilancia de carpeta &middot; Asistente de facturas{% endblock %}
+{% block wrap_extra %}wrap-angosto{% endblock %}
+{% block content %}
+<h1>Vigilancia de carpeta</h1>
+<p class="subtitulo">Lee automáticamente las facturas XML que llegan a la carpeta de entrada, sin pasar por la subida manual.</p>
+
+<div class="panel bandeja" style="padding: 20px;">
+  <span class="badge {{ clase_badge }}">{{ etiqueta_badge }}</span>
+  <p class="panel-carpeta" style="margin-top: 10px;">{{ carpeta_monitoreada }}</p>
+
+  {% if mensaje_error %}
+  <div class="resultado-accion resultado-error" style="margin-top: 14px;"><strong>Error</strong>{{ mensaje_error }}</div>
+  {% endif %}
+
+  <div class="panel-resumen">
+    <div class="panel-tarjeta">
+      <div class="panel-tarjeta-valor">{{ pendientes }}</div>
+      <div class="panel-tarjeta-etiqueta">Archivos pendientes</div>
+    </div>
+    <div class="panel-tarjeta">
+      <div class="panel-tarjeta-valor">{{ procesados_hoy }}</div>
+      <div class="panel-tarjeta-etiqueta">Procesados hoy</div>
+    </div>
+  </div>
+
+  {% if not puede_iniciar %}
+  <p class="panel-ya-vigilando">Ya está vigilando la carpeta. Puede cambiar de ruta abajo o detener el monitoreo.</p>
+  {% endif %}
+  <form method="post" action="/admin/revisar-carpeta">
+    <div class="fila-usuario" style="margin-top: 14px; align-items: flex-end;">
+      <div>
+        <label for="carpeta">Ruta de la carpeta a vigilar</label>
+        <input type="text" id="carpeta" name="carpeta" value="{{ carpeta_monitoreada }}" placeholder="C:\ruta\a\la\carpeta">
+      </div>
+      <button type="button" id="btn-elegir-carpeta" class="btn btn-guardar" style="flex: 0 0 auto;">Elegir carpeta...</button>
+    </div>
+    <button type="submit" class="btn btn-aprobar" style="margin-top: 10px;">{{ "Cambiar carpeta" if not puede_iniciar else "Iniciar monitoreo" }}</button>
+  </form>
+  {% if not puede_iniciar %}
+  <form method="post" action="/admin/detener-carpeta">
+    <button type="submit" class="btn btn-rechazar" style="margin-top: 10px;">Detener monitoreo</button>
+  </form>
+  {% endif %}
+</div>
+
+<h2 style="margin-top: 28px; font-size: 15px;">Últimos archivos con error</h2>
+{% if not ultimos_errores %}
+<div class="vacio">No hay archivos con error.</div>
+{% else %}
+<div style="margin-top: 12px;">
+  {% for archivo in ultimos_errores %}
+  <div class="panel-fila-error">
+    <div>
+      <div class="panel-fila-error-nombre">{{ archivo.nombre }}</div>
+      {% if archivo.motivo %}
+      <div class="panel-fila-error-motivo">{{ archivo.motivo }}</div>
+      {% endif %}
+    </div>
+    <form method="post" action="/admin/reintentar-archivo">
+      <input type="hidden" name="nombre_archivo" value="{{ archivo.nombre }}">
+      <button type="submit" class="btn btn-guardar">Reintentar</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+<script>
+document.getElementById("btn-elegir-carpeta")?.addEventListener("click", async () => {
+  const boton = document.getElementById("btn-elegir-carpeta");
+  const campo = document.getElementById("carpeta");
+  const textoOriginal = boton.textContent;
+  boton.disabled = true;
+  boton.textContent = "Abriendo...";
+  try {
+    const respuesta = await fetch("/admin/elegir-carpeta", {
+      method: "POST",
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: "carpeta_actual=" + encodeURIComponent(campo.value || ""),
+    });
+    if (respuesta.ok) {
+      const datos = await respuesta.json();
+      if (datos.carpeta) {
+        campo.value = datos.carpeta;
+      }
+    }
+  } finally {
+    boton.disabled = false;
+    boton.textContent = textoOriginal;
+  }
+});
+</script>
+{% endblock %}

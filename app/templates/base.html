@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{% block title %}Asistente de facturas{% endblock %}</title>
+{% block scripts_head %}{% endblock %}
+<link rel="stylesheet" href="/static/style.css?v={{ css_version() }}">
+</head >
+<body>
+  <div class="app-layout">
+    <aside class="sidebar">
+      <a href="/" class="sidebar-marca"><img src="/static/logo.png?v={{ logo_version() }}" alt="CuentIA" class="sidebar-logo"></a>
+      <nav class="sidebar-nav">
+        <a href="/panel-vigilancia" class="{{ 'activo' if request.url.path == '/panel-vigilancia' else '' }}">
+          <svg class="sidebar-nav-icono" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M1 12s4-7 11-7 11 7 11 7-4 7-11 7-11-7-11-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          Vigilancia
+        </a>
+        <a href="/" class="{{ 'activo' if request.url.path == '/' else '' }}">
+          <svg class="sidebar-nav-icono" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 12h-6l-2 3h-4l-2-3H2"/><path d="M5.45 5.11 2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11Z"/></svg>
+          Recepción
+        </a>
+        <a href="/facturas" class="{{ 'activo' if request.url.path == '/facturas' else '' }}">
+          <svg class="sidebar-nav-icono" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+          Pendientes
+        </a>
+        <a href="/aprobadas" class="{{ 'activo' if request.url.path == '/aprobadas' else '' }}">
+          <svg class="sidebar-nav-icono" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"/><polyline points="22 4 12 14.01 9 11.01"/></svg>
+          Aprobadas
+        </a>
+        <a href="/historial" class="{{ 'activo' if request.url.path == '/historial' else '' }}">
+          <svg class="sidebar-nav-icono" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 3-6.7L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+          Historial
+        </a>
+      </nav>
+  
+      {% if request.state.usuario %}
+      <div class="sidebar-usuario">
+        <span>{{ request.state.usuario.nombre_usuario }}</span>
+        <form method="post" action="/logout">
+          <button type="submit" class="btn-link">
+            <svg class="btn-link-icono" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/></svg>
+            Cerrar sesión
+          </button>
+        </form>
+      </div>
+      {% endif %}
+    </aside>
+    <main class="wrap {% block wrap_extra %}{% endblock %}">
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

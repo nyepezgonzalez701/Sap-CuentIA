@@ -1,0 +1,33 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Iniciar sesión &middot; Asistente de facturas</title>
+<link rel="stylesheet" href="/static/style.css?v={{ css_version() }}">
+</head>
+<body>
+  <main class="wrap wrap-angosto">
+    <div class="login-wrap">
+      <img src="/static/logo.png?v={{ logo_version() }}" alt="CuentIA" class="login-logo">
+      <p class="login-titulo">Iniciar sesión</p>
+      {% if error %}
+      <div class="resultado-accion resultado-error"><strong>No se pudo iniciar sesión</strong>{{ error }}</div>
+      {% endif %}
+      <form method="post" action="/login">
+        <div class="fila-usuario">
+          <label for="usuario">Usuario</label>
+          <input type="text" id="usuario" name="usuario" required autofocus>
+        </div>
+        <div class="fila-usuario">
+          <label for="contrasena">Contraseña</label>
+          <input type="password" id="contrasena" name="contrasena" required>
+        </div>
+        <div class="fila-accion">
+          <button type="submit" class="btn btn-aprobar">Entrar</button>
+        </div>
+      </form>
+    </div>
+  </main>
+</body>
+</html>

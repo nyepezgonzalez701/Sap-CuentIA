@@ -8,6 +8,8 @@ class Factura(Base):
 
     id = Column(Integer, primary_key=True, index=True)
     ruc_proveedor = Column(String, nullable=False)
+    razon_social_emisor = Column(String, nullable=True)  # razonSocial del XML, para registrar el proveedor si hace falta
+    clave_acceso = Column(String, nullable=True)  # claveAcceso del XML (SRI), 49 digitos
     numero_factura = Column(String, nullable=False, unique=True)
     fecha_emision = Column(Date, nullable=False)
     subtotal = Column(Numeric(12, 2), nullable=False)
@@ -18,7 +20,11 @@ class Factura(Base):
     cuenta_sugerida_confianza = Column(String, nullable=True)  # "alta" | "media" | "baja"
     cuenta_sugerida_justificacion = Column(Text, nullable=True)
     cuenta_final = Column(String, nullable=True)
+    usuario_guardado = Column(String, nullable=True)  # nombre de quien hizo el ultimo guardado preliminar (estado "guardada")
     referencia_sap = Column(String, nullable=True)
+    exportado_a_excel = Column(Boolean, nullable=False, default=False)
+    exportado_en = Column(DateTime(timezone=True), nullable=True)
+    exportado_por = Column(String, nullable=True)
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -29,6 +35,8 @@ class Proveedor(Base):
     ruc = Column(String, nullable=False, unique=True, index=True)
     razon_social = Column(String, nullable=False)
     estado = Column(String, nullable=False, default="activo")
+    correo = Column(String, nullable=True)
+    saldo = Column(Numeric(12, 2), nullable=False, default=0)
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
 
 
@@ -61,6 +69,10 @@ class FacturaDetalleLinea(Base):
     monto = Column(Numeric(12, 2), nullable=False)
     tipo = Column(String, nullable=True)  # "bien" | "servicio"
     destino = Column(String, nullable=True)  # "gasto" | "inventario_reventa" | "activo_fijo"
+    # codigo_cuenta_sugerido se llena una sola vez, al crear la linea (ver ingesta.py), y
+    # nunca se sobrescribe despues -- es el registro permanente de lo que propuso la IA se genero el asiento contable,|
+    # independiente de lo que el aprobador termine confirmando en codigo_cuenta_final. Aprobado por la contadora, el codigo_cuenta_final puede ser distinto al sugerido por la IA, y eso no borra ni cambia el registro de lo que la IA propuso originalmente. El reporte de precision de la IA (reportes_excel.py) depende de que esto siga siendo asi.
+    # reporte de precision de la IA (reportes_excel.py) depende de que esto siga siendo asi.
     codigo_cuenta_sugerido = Column(String, nullable=True)
     confianza = Column(String, nullable=True)
     justificacion = Column(Text, nullable=True)
@@ -76,4 +88,44 @@ class HistorialAccion(Base):
     usuario = Column(String, nullable=False)
     cuenta_utilizada = Column(String, nullable=True)
     motivo = Column(Text, nullable=True)
+    creado_en = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class Usuario(Base):
+    __tablename__ = "usuarios"
+
+    id = Column(Integer, primary_key=True, index=True)
+    nombre_usuario = Column(String, nullable=False, unique=True, index=True)
+    hash_contrasena = Column(String, nullable=False)
+    rol = Column(String, nullable=False, default="contadora")  # "contadora" | "administrador"
+    activo = Column(Boolean, nullable=False, default=True)
+    creado_en = Column(DateTime(timezone=True), server_default=func.now())
+
+    # ejemplo de usario nivel 2
+
+
+class EstadoVigilante(Base):
+    """
+    Fila unica (id=1) con el estado actual del hilo de vigilancia de carpeta. Vive en la
+    base de datos -- no en memoria -- para que el panel pueda mostrar el estado real
+    incluso si el servidor se reinicio y el hilo ya no existe (ver app/core/vigilante_carpeta.py).
+    """
+    __tablename__ = "estado_vigilante"
+
+    id = Column(Integer, primary_key=True)
+    estado = Column(String, nullable=False, default="en_espera")  # en_espera | vigilando | procesando | error
+    carpeta_monitoreada = Column(String, nullable=True)
+    ultima_actualizacion = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    mensaje_error = Column(Text, nullable=True)
+
+
+class HistorialVigilancia(Base):
+    """Auditoria de quien inicio el monitoreo (o reintento un archivo) y cuando, con el resultado."""
+    __tablename__ = "historial_vigilancia"
+
+    id = Column(Integer, primary_key=True, index=True)
+    usuario = Column(String, nullable=False)
+    accion = Column(String, nullable=False)  # "iniciar_monitoreo" | "reintentar_archivo" en esta seccion s euentra el historail de vigilancia de la carpeta
+    resultado = Column(String, nullable=False)  # "ok" | "error"
+    mensaje = Column(Text, nullable=True)
     creado_en = Column(DateTime(timezone=True), server_default=func.now())

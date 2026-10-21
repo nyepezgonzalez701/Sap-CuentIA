@@ -1,52 +1,12 @@
-<!DOCTYPE html>
-<html lang="es">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Historial de acciones</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Source+Serif+4:opsz,wght@8..60,400;8..60,600&family=Inter:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<style>
-  :root {
-    --bg: #F4F5F7; --surface: #FFFFFF; --border: #E1E4EA; --ink: #1A2332;
-    --slate: #5C6672; --slate-light: #8992A0; --accent: #2B4C7E; --accent-dark: #1D3A63;
-    --success: #1F7A54; --success-bg: #E7F5EE; --success-border: #A9D9C3;
-    --danger: #B33F32; --danger-bg: #FBEAE7; --danger-border: #EFC0B7;
-    --warning: #8A5A12; --warning-bg: #FBF1DF;
-    --font-display: 'Source Serif 4', Georgia, serif;
-    --font-body: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-    --font-mono: 'IBM Plex Mono', 'Consolas', monospace;
-  }
-  * { box-sizing: border-box; }
-  body { margin: 0; background: var(--bg); background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px); background-size: 32px 32px; background-position: -1px -1px; color: var(--ink); font-family: var(--font-body); min-height: 100vh; padding: 48px 20px; }
-  .wrap { max-width: 760px; margin: 0 auto; }
-  .eyebrow { font-family: var(--font-mono); font-size: 11px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--slate); margin: 0 0 10px; }
-  h1 { font-family: var(--font-display); font-weight: 600; font-size: 28px; margin: 0 0 6px; }
-  .subtitulo { color: var(--slate); font-size: 14px; margin: 0 0 28px; }
-  .subtitulo a { color: var(--accent); }
-  .tarjeta { background: var(--surface); border: 1px solid var(--border); border-radius: 6px; padding: 22px 24px; margin-bottom: 16px; box-shadow: 0 1px 2px rgba(26, 35, 50, 0.04); }
-  .tarjeta-header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; margin-bottom: 14px; flex-wrap: wrap; }
-  .tarjeta-monto { font-family: var(--font-mono); font-size: 12.5px; color: var(--slate-light); }
-  .tarjeta-meta { font-family: var(--font-mono); font-size: 12px; color: var(--slate-light); }
-  .fila-motivo { font-size: 13px; color: var(--slate); border-top: 1px solid var(--border); margin-top: 14px; padding-top: 14px; white-space: pre-wrap; }
-  .badge { font-family: var(--font-mono); font-size: 11px; font-weight: 600; padding: 4px 10px; border-radius: 20px; text-transform: uppercase; letter-spacing: 0.04em; }
-  .badge-exito { background: var(--success-bg); color: var(--success); border: 1px solid var(--success-border); }
-  .badge-peligro { background: var(--danger-bg); color: var(--danger); border: 1px solid var(--danger-border); }
-  .badge-neutro { background: var(--warning-bg); color: var(--warning); border: 1px solid #E8C878; }
-  .vacio { text-align: center; padding: 60px 20px; color: var(--slate-light); font-size: 14px; }
-  .paginacion { display: flex; justify-content: space-between; align-items: center; margin-top: 24px; font-family: var(--font-mono); font-size: 13px; }
-  .paginacion a { color: var(--accent); text-decoration: none; }
-  .pagina-actual { color: var(--slate-light); }
-</style>
-</head>
-<body>
-  <div class="wrap">
-    <p class="eyebrow">Sistema de procesamiento contable</p>
-    <h1>Historial de acciones</h1>
-    <p class="subtitulo"><a href="/facturas">&larr; Volver a la mesa de aprobacion</a></p>
-    <div id="lista-historial">
-      {{ contenido_lista | safe }}
-    </div>
-  </div>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}Historial de acciones{% endblock %}
+{% block content %}
+<h1>Historial de acciones</h1>
+<p class="subtitulo"><a href="/facturas">Volver a pendientes</a></p>
+<div id="lista-historial">
+  {{ contenido_lista | safe }}
+</div>
+{% endblock %}
+
+
+

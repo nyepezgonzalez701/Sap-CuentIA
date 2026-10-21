@@ -18,5 +18,7 @@ db.add(factura_ejemplo)
 db.commit()
 db.refresh(factura_ejemplo)
 
+
+
 print(f"Factura guardada con id: {factura_ejemplo.id}")
 db.close()
