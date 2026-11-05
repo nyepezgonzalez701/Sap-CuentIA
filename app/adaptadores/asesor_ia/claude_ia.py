@@ -1,13 +1,58 @@
 import json
+import os
 from typing import Optional
 
 import anthropic
+import httpx
 from sqlalchemy.orm import Session
 
 from app.adaptadores.asesor_ia.base import SugeridorCuenta, SugerenciaCuenta
 from app.core.models import CuentaContable
 
 MODELO = "claude-sonnet-4-6"
+
+# Si OPENROUTER_API_KEY esta definida en .env, las consultas van por OpenRouter (mas barato)
+# en vez de la API de Claude. El modelo se cambia con OPENROUTER_MODELO.
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+OPENROUTER_MODELO_POR_DEFECTO = "google/gemini-2.5-flash"
+
+
+def _llamar_ia(prompt_sistema: str, mensaje_usuario: str, formato: dict, max_tokens: int) -> Optional[str]:
+    """
+    Devuelve el texto JSON de la respuesta del modelo, o None si no vino texto.
+    Puede lanzar excepcion ante errores de red/API -- los llamadores ya la capturan.
+    """
+    api_key_openrouter = os.getenv("OPENROUTER_API_KEY")
+    if api_key_openrouter:
+        response = httpx.post(
+            OPENROUTER_URL,
+            headers={"Authorization": f"Bearer {api_key_openrouter}"},
+            json={
+                "model": os.getenv("OPENROUTER_MODELO") or OPENROUTER_MODELO_POR_DEFECTO,
+                "max_tokens": max_tokens,
+                "messages": [
+                    {"role": "system", "content": prompt_sistema},
+                    {"role": "user", "content": mensaje_usuario},
+                ],
+                "response_format": {
+                    "type": "json_schema",
+                    "json_schema": {"name": "respuesta", "strict": True, "schema": formato["schema"]},
+                },
+            },
+            timeout=60,
+        )
+        response.raise_for_status()
+        return response.json()["choices"][0]["message"].get("content")
+
+    client = anthropic.Anthropic()
+    response = client.messages.create(
+        model=MODELO,
+        max_tokens=max_tokens,
+        system=[{"type": "text", "text": prompt_sistema, "cache_control": {"type": "ephemeral"}}],
+        messages=[{"role": "user", "content": mensaje_usuario}],
+        output_config={"format": formato},
+    )
+    return next((b.text for b in response.content if b.type == "text"), None)
 
 _SIN_SUGERENCIA = "SIN_SUGERENCIA"
 
@@ -103,28 +148,19 @@ def sugerir_cuenta_contable(factura: dict, catalogo: list[dict]) -> dict:
     )
 
     try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=MODELO,
+        texto = _llamar_ia(
+            _PROMPT_SISTEMA.format(
+                catalogo=_construir_catalogo_texto(catalogo),
+                sin_sugerencia=_SIN_SUGERENCIA,
+            ),
+            mensaje_usuario,
+            _construir_schema(codigos_validos),
             max_tokens=824,
-            system=[
-                {
-                    "type": "text",
-                    "text": _PROMPT_SISTEMA.format(
-                        catalogo=_construir_catalogo_texto(catalogo),
-                        sin_sugerencia=_SIN_SUGERENCIA,
-                    ),
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{"role": "user", "content": mensaje_usuario}],
-            output_config={"format": _construir_schema(codigos_validos)},
         )
     except Exception:
         # Cualquier fallo de red/API/autenticacion: nunca debe tumbar el flujo de la factura.
         return dict(_RESPUESTA_VACIA)
 
-    texto = next((b.text for b in response.content if b.type == "text"), None)
     if texto is None:
         return dict(_RESPUESTA_VACIA)
 
@@ -403,34 +439,22 @@ def clasificar_items_factura(items: list[dict], catalogo: list[dict]) -> list[di
     )
 
     try:
-        client = anthropic.Anthropic()
-        response = client.messages.create(
-            model=MODELO,
-            max_tokens=3096,
-            system=[
-                {
-                    "type": "text",
-                    "text": _PROMPT_SISTEMA_LINEAS.format(
-                        catalogo_gasto=_construir_catalogo_texto(catalogo_por_destino["gasto"]),
-                        catalogo_inventario=_construir_catalogo_texto(catalogo_por_destino["inventario_reventa"]),
-                        catalogo_activo_fijo=_construir_catalogo_texto(catalogo_por_destino["activo_fijo"]),
-                        sin_sugerencia=_SIN_SUGERENCIA,
-                    ),
-                    "cache_control": {"type": "ephemeral"},
-                }
-            ],
-            messages=[{
-                "role": "user",
-                "content": f"Items de la factura:\n{items_texto}\n\nClasifica cada linea.",
-            }],
-            output_config={"format": _construir_schema_lineas(
+        texto = _llamar_ia(
+            _PROMPT_SISTEMA_LINEAS.format(
+                catalogo_gasto=_construir_catalogo_texto(catalogo_por_destino["gasto"]),
+                catalogo_inventario=_construir_catalogo_texto(catalogo_por_destino["inventario_reventa"]),
+                catalogo_activo_fijo=_construir_catalogo_texto(catalogo_por_destino["activo_fijo"]),
+                sin_sugerencia=_SIN_SUGERENCIA,
+            ),
+            f"Items de la factura:\n{items_texto}\n\nClasifica cada linea.",
+            _construir_schema_lineas(
                 {destino: list(codigos) for destino, codigos in codigos_por_destino.items()}
-            )},
+            ),
+            max_tokens=3096,
         )
     except Exception:
         return sin_clasificar
 
-    texto = next((b.text for b in response.content if b.type == "text"), None)
     if texto is None:
         return sin_clasificar
 

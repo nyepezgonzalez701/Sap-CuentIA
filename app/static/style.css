@@ -603,6 +603,13 @@ select { min-width: 200px; }
 .resultado-rechazada { background: var(--danger-bg); border: 1px solid var(--danger-border); color: var(--danger); }
 .resultado-error { background: var(--warning-bg); border: 1px solid var(--warning-border); color: var(--warning); }
 
+.descarga-progreso { display: flex; gap: 14px; align-items: flex-start; margin-top: 14px; padding: 14px 16px; border-radius: var(--radius-sm); background: var(--primary-soft); border: 1px solid var(--border); }
+.descarga-progreso-titulo { font-weight: 600; font-size: 13.5px; color: var(--text); }
+.descarga-progreso-detalle { font-size: 13px; color: var(--text-soft); margin-top: 3px; }
+.spinner { flex: 0 0 auto; width: 22px; height: 22px; border: 3px solid var(--border-strong); border-top-color: var(--primary); border-radius: 50%; animation: girar 0.8s linear infinite; }
+@keyframes girar { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .spinner { animation-duration: 2.4s; } }
+
 
 /* sello: estado del proveedor en el recibo de una factura recien subida.
    Relleno solido cuando requiere atencion -- una etiqueta pastel se pasa por alto,
@@ -710,6 +717,7 @@ select { min-width: 200px; }
   background: var(--danger-bg);
   border-radius: 8px;
   margin-bottom: 8px;
+  
 }
 
 

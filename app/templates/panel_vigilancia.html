@@ -24,6 +24,18 @@
     </div>
   </div>
 
+  {% if pendientes and not puede_iniciar and not factible_en_curso %}
+  <div class="descarga-progreso" id="carpeta-progreso">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>
+      <div class="descarga-progreso-titulo">Procesando las facturas de la carpeta</div>
+      <div class="descarga-progreso-detalle" id="carpeta-progreso-detalle" role="status">
+        Faltan {{ pendientes }}. No hace falta recargar la página: al terminar le llevamos a Pendientes.
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
   {% if not puede_iniciar %}
   <p class="panel-ya-vigilando">Ya está vigilando la carpeta. Puede cambiar de ruta abajo o detener el monitoreo.</p>
   {% endif %}
@@ -43,6 +55,59 @@
   </form>
   {% endif %}
 </div>
+
+<h2 style="margin-top: 28px; font-size: 15px;">Descarga desde Factible</h2>
+{% if not factible_configurado %}
+<div class="vacio">La integración con Factible no está configurada (FACTIBLE_MODO en el archivo .env).</div>
+{% else %}
+<div class="panel bandeja" style="padding: 20px; margin-top: 12px;">
+  <p class="panel-carpeta">
+    Facturas recibidas que se dejan en la carpeta vigilada.
+    {% if factible_automatica %}Descarga automática diaria a las {{ factible_hora }} (documentos del día anterior).{% else %}Descarga automática desactivada.{% endif %}
+    {% if factible_modo == "simulador" %}<strong>(modo simulador)</strong>{% endif %}
+  </p>
+  {% if factible_en_curso %}
+  <div class="descarga-progreso" id="descarga-progreso" data-id="{{ factible_en_curso.id }}">
+    <div class="spinner" aria-hidden="true"></div>
+    <div>
+      <div class="descarga-progreso-titulo">Descargando las facturas del {{ factible_en_curso.fecha_documentos.strftime("%d/%m/%Y") }}{% if factible_en_curso.total_claves %} ({{ factible_en_curso.total_claves }} documentos){% endif %}</div>
+      <div class="descarga-progreso-detalle" id="descarga-progreso-detalle" role="status">
+        Factible está preparando el archivo; puede tardar varios minutos. No hace falta recargar la página:
+        al terminar le llevamos a Pendientes.
+      </div>
+    </div>
+  </div>
+  {% endif %}
+  <form method="post" action="/admin/factible/descargar" id="form-factible">
+    <div class="fila-usuario" style="margin-top: 14px; align-items: flex-end;">
+      <div>
+        <label for="fecha-factible">Fecha de los documentos</label>
+        <input type="date" id="fecha-factible" name="fecha" value="{{ factible_fecha_sugerida }}" required>
+      </div>
+      <button type="submit" id="btn-factible" class="btn btn-aprobar" style="flex: 0 0 auto;"{% if factible_en_curso %} disabled title="Espere a que termine la descarga en curso"{% endif %}>Descargar ahora</button>
+    </div>
+  </form>
+</div>
+
+{% if descargas_factible %}
+<div style="margin-top: 12px;">
+  {% for d in descargas_factible %}
+  {% set badge = badges_factible.get(d.estado, ("badge-gris", d.estado)) %}
+  <div class="panel-fila-error">
+    <div>
+      <div class="panel-fila-error-nombre">
+        <span class="badge {{ badge[0] }}">{{ badge[1] }}</span>
+        {{ d.fecha_documentos.strftime("%d/%m/%Y") }} &middot; {{ d.origen }} ({{ d.usuario }})
+      </div>
+      {% if d.mensaje %}
+      <div class="panel-fila-error-motivo">{{ d.mensaje }}</div>
+      {% endif %}
+    </div>
+  </div>
+  {% endfor %}
+</div>
+{% endif %}
+{% endif %}
 
 <h2 style="margin-top: 28px; font-size: 15px;">Últimos archivos con error</h2>
 {% if not ultimos_errores %}
@@ -69,6 +134,89 @@
 
 {% block scripts %}
 <script>
+document.getElementById("form-factible")?.addEventListener("submit", () => {
+  const boton = document.getElementById("btn-factible");
+  boton.disabled = true;
+  boton.textContent = "Pidiendo a Factible...";
+});
+
+// Sigue la descarga en curso sin recargar la pagina: primero espera a que Factible
+// entregue el ZIP y luego a que el vigilante procese los XML; al final lleva a Pendientes.
+(() => {
+  const caja = document.getElementById("descarga-progreso");
+  if (!caja) return;
+  const detalle = document.getElementById("descarga-progreso-detalle");
+  const CADA_MS = 3000;
+
+  async function revisar() {
+    let datos;
+    try {
+      const respuesta = await fetch(`/admin/factible/estado/${caja.dataset.id}`, { headers: { Accept: "application/json" } });
+      datos = await respuesta.json();
+    } catch {
+      setTimeout(revisar, CADA_MS);  // sin red o sesion vencida: se vuelve a intentar
+      return;
+    }
+
+    if (datos.estado === "PENDIENTE") {
+      setTimeout(revisar, CADA_MS);
+      return;
+    }
+    if (datos.estado !== "FINALIZADO" || datos.xml_guardados === 0) {
+      location.reload();  // sin documentos, error o nada nuevo: el panel muestra el resultado
+      return;
+    }
+    if (datos.pendientes_carpeta === 0) {
+      detalle.textContent = "Listo. Abriendo Pendientes...";
+      location.href = "/facturas";
+      return;
+    }
+    if (!datos.vigilante_activo) {
+      caja.querySelector(".spinner").remove();
+      detalle.textContent = `Se descargaron ${datos.xml_guardados} factura(s), pero el monitoreo de la carpeta está detenido. Inícielo arriba para procesarlas.`;
+      return;
+    }
+    detalle.textContent = `Descargadas ${datos.xml_guardados} factura(s). Procesándolas con la IA: faltan ${datos.pendientes_carpeta}...`;
+    setTimeout(revisar, CADA_MS);
+  }
+
+  setTimeout(revisar, CADA_MS);
+})();
+
+// Archivos que ya estaban en la carpeta al abrir el panel (sin descarga en curso).
+(() => {
+  const caja = document.getElementById("carpeta-progreso");
+  if (!caja) return;
+  const detalle = document.getElementById("carpeta-progreso-detalle");
+  const valores = document.querySelectorAll(".panel-tarjeta-valor");
+  const CADA_MS = 3000;
+
+  async function revisar() {
+    let datos;
+    try {
+      datos = await (await fetch("/admin/vigilancia/estado", { headers: { Accept: "application/json" } })).json();
+    } catch {
+      setTimeout(revisar, CADA_MS);
+      return;
+    }
+    valores[0].textContent = datos.pendientes_carpeta;
+    valores[1].textContent = datos.procesados_hoy;
+    if (datos.pendientes_carpeta === 0) {
+      detalle.textContent = "Listo. Abriendo Pendientes...";
+      location.href = "/facturas";
+      return;
+    }
+    if (!datos.vigilante_activo) {
+      location.reload();
+      return;
+    }
+    detalle.textContent = `Procesándolas con la IA: faltan ${datos.pendientes_carpeta}...`;
+    setTimeout(revisar, CADA_MS);
+  }
+
+  setTimeout(revisar, CADA_MS);
+})();
+
 document.getElementById("btn-elegir-carpeta")?.addEventListener("click", async () => {
   const boton = document.getElementById("btn-elegir-carpeta");
   const campo = document.getElementById("carpeta");

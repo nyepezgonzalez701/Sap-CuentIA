@@ -1,20 +1,21 @@
 ﻿import html
 import os
 import urllib.parse
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request, UploadFile, File, Form
-from fastapi.responses import HTMLResponse, RedirectResponse, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.core import auth
 from app.core import vigilante_carpeta
-from app.core.models import HistorialVigilancia
+from app.core import descarga_factible
+from app.core.models import DescargaFactible, HistorialVigilancia
 from app.core.ingesta import procesar_factura_xml
 from app.core.validaciones import (
     validar_proveedor,
@@ -105,6 +106,11 @@ def _al_arrancar_servidor() -> None:
     # El hilo de vigilancia vive en memoria y no sobrevive a un reinicio del
     # servidor -- el estado real al arrancar siempre es "en_espera".
     vigilante_carpeta.reiniciar_estado_al_arrancar()
+    # A diferencia del vigilante, el programador de Factible si arranca solo: la
+    # descarga es automatica cada manana (FACTIBLE_DESCARGA_AUTOMATICA/HORA_DESCARGA)
+    # y ademas retoma los tokens que quedaron PENDIENTE antes de un reinicio.
+    _, mensaje = descarga_factible.iniciar_programador()
+    print(f"Factible: {mensaje}")
 
 ETIQUETAS_ESTADO = {
     EstadoProveedor.REGISTRADO: "Proveedor registrado",
@@ -936,9 +942,14 @@ def ver_panel_vigilancia(request: Request):
         estado_actual = estado.estado
         carpeta_monitoreada = estado.carpeta_monitoreada or vigilante_carpeta.CARPETA_POR_DEFECTO
         mensaje_error = estado.mensaje_error
+        descargas_factible = descarga_factible.listar_ultimas_descargas(db)
+        for d in descargas_factible:
+            db.expunge(d)
+        factible_en_curso = next((d for d in descargas_factible if d.estado == "PENDIENTE"), None)
     finally:
         db.close()
 
+    config_factible = descarga_factible.leer_config()
     clase_badge, etiqueta_badge = BADGES_ESTADO_VIGILANTE.get(estado_actual, ("badge-gris", estado_actual))
     pendientes = vigilante_carpeta.contar_pendientes(carpeta_monitoreada)
     procesados_hoy = vigilante_carpeta.contar_procesados_hoy(carpeta_monitoreada)
@@ -957,8 +968,99 @@ def ver_panel_vigilancia(request: Request):
             "procesados_hoy": procesados_hoy,
             "ultimos_errores": ultimos_errores,
             "puede_iniciar": estado_actual in ("en_espera", "error"),
+            "factible_configurado": bool(config_factible.modo),
+            "factible_modo": config_factible.modo,
+            "factible_automatica": config_factible.descarga_automatica,
+            "factible_hora": config_factible.hora_descarga.strftime("%H:%M"),
+            "factible_fecha_sugerida": (datetime.now(ZONA_ECUADOR).date() - timedelta(days=1)).isoformat(),
+            "descargas_factible": descargas_factible,
+            "factible_en_curso": factible_en_curso,
+            "badges_factible": BADGES_ESTADO_FACTIBLE,
         },
     )
+
+
+BADGES_ESTADO_FACTIBLE = {
+    "PENDIENTE": ("badge-ambar", "En proceso"),
+    "FINALIZADO": ("badge-azul", "Descargada"),
+    "SIN_DOCUMENTOS": ("badge-gris", "Sin documentos"),
+    "ERROR": ("badge-rojo", "Error"),
+}
+
+
+@app.get("/admin/factible/estado/{descarga_id}")
+def estado_descarga_factible(descarga_id: int):
+    """Lo consulta el spinner del panel de vigilancia cada pocos segundos para saber
+    si la descarga termino y si el vigilante ya proceso los XML que dejo en la carpeta."""
+    db = SessionLocal()
+    try:
+        descarga = db.get(DescargaFactible, descarga_id)
+        if descarga is None:
+            return JSONResponse({"error": "Descarga no encontrada."}, status_code=404)
+        datos = {
+            "estado": descarga.estado,
+            "mensaje": descarga.mensaje,
+            "xml_guardados": descarga.xml_guardados or 0,
+        }
+    finally:
+        db.close()
+    return datos | estado_vigilancia()
+
+
+@app.get("/admin/vigilancia/estado")
+def estado_vigilancia():
+    """Archivos que faltan procesar en la carpeta. Se lee el estado guardado en la BD y no
+    vigilante_carpeta.esta_activo(): este proceso puede no ser el que tiene el hilo."""
+    db = SessionLocal()
+    try:
+        estado = vigilante_carpeta.leer_estado(db)
+        carpeta = estado.carpeta_monitoreada or vigilante_carpeta.CARPETA_POR_DEFECTO
+        activo = estado.estado in ("vigilando", "procesando")
+    finally:
+        db.close()
+    return {
+        "pendientes_carpeta": vigilante_carpeta.contar_pendientes(carpeta),
+        "procesados_hoy": vigilante_carpeta.contar_procesados_hoy(carpeta),
+        "vigilante_activo": activo,
+    }
+
+
+@app.post("/admin/factible/descargar")
+async def descargar_de_factible(request: Request):
+    """Pide a Factible las facturas recibidas de una fecha (por defecto, ayer). Solo
+    genera el token; el programador lo consulta y deja los XML en la carpeta vigilada."""
+    usuario = request.state.usuario
+    form = await request.form()
+    try:
+        fecha = date.fromisoformat((form.get("fecha") or "").strip())
+    except ValueError:
+        fecha = None
+
+    if fecha is None:
+        ok, mensaje = False, "Fecha invalida."
+    else:
+        resultado = descarga_factible.descargar_ahora(fecha, usuario["nombre_usuario"])
+        if isinstance(resultado, str):
+            ok, mensaje = False, resultado
+        else:
+            ok = resultado.estado != "ERROR"
+            mensaje = f"{fecha:%d/%m/%Y}: {resultado.mensaje}"
+
+    db = SessionLocal()
+    try:
+        db.add(
+            HistorialVigilancia(
+                usuario=usuario["nombre_usuario"],
+                accion="descargar_factible",
+                resultado="ok" if ok else "error",
+                mensaje=mensaje,
+            )
+        )
+        db.commit()
+    finally:
+        db.close()
+
+    return RedirectResponse(url="/panel-vigilancia", status_code=303)
 
 
 @app.post("/admin/elegir-carpeta")

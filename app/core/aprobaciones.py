@@ -277,7 +277,7 @@ def aprobar_factura(db: Session, factura_id: int, usuario: str, codigo_cuenta: s
     factura = db.query(Factura).filter(Factura.id == factura_id).first()
 
     if factura is None:
-        raise AccionInvalidaError("La factura no existe.")
+       raise AccionInvalidaError("La factura no existe.")
     if factura.estado not in ("pendiente", "guardada"):
         raise AccionInvalidaError(f"La factura ya fue procesada (estado actual: {factura.estado}).")
     if not usuario or not usuario.strip():
@@ -435,7 +435,7 @@ def guardar_factura_preliminar(
                     f"La cuenta '{codigo}' para la linea '{linea.descripcion}' no existe, no esta activa, "
                     "o es una cuenta totalizadora."
                 )
-            # Codigo cuenta final de la linea se guarda en el mismo campo que usa la aprobacion real, para cuando existe una ´peteicionn
+            # Codigo cuenta final de la linea se guarda en el mismo campo que usa la aprobacion real, para cuando existe una ´petición de nievla 2  lina de codigo de cuenta final
             
             linea.codigo_cuenta_final = cuenta.codigo
             codigos_guardados.append(cuenta.codigo)
@@ -447,6 +447,8 @@ def guardar_factura_preliminar(
             raise AccionInvalidaError("La cuenta seleccionada no existe, no esta activa, o es una cuenta totalizadora.")
         factura.cuenta_final = cuenta.codigo
         cuenta_utilizada = cuenta.codigo
+
+        #Ejemplos de estado guardada
 
     factura.estado = "guardada"
     

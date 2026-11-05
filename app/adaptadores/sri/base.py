@@ -7,6 +7,7 @@ class ResultadoValidacionSRI:
     autorizado: bool
     estado: str  # "AUTORIZADO" | "NO AUTORIZADO" | "NO ENCONTRADO"
     mensaje: str
+    
 
 
 class ClienteSRI(ABC):

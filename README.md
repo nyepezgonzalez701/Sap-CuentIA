@@ -80,6 +80,38 @@ enviarla a SAP. La IA recomienda; una persona siempre decide.
 
    Abrí `http://localhost:8000` en el navegador.
 
+## Descarga automática desde Factible
+
+El sistema puede bajar solo las **facturas recibidas** desde el ApiRest de Factible
+y dejarlas en la carpeta que vigila el panel de vigilancia (de ahí siguen el flujo
+normal). Configuración en `.env` (ver `.env.example`):
+
+| Variable | Qué es |
+|---|---|
+| `FACTIBLE_MODO` | `real`, `simulador` o vacío (desactivada) |
+| `FACTIBLE_URL_BASE` | host del API. QA: `https://qa-webinterno.esfactible.com` hasta mediados de noviembre 2026; después `https://qa-api.esfactible.com` (mismas rutas) |
+| `FACTIBLE_USUARIO` / `FACTIBLE_CLAVE` / `FACTIBLE_RUC` | credenciales del API (nunca en el código) |
+| `FACTIBLE_DESCARGA_AUTOMATICA` | `true` para bajar cada mañana los documentos del día anterior |
+| `FACTIBLE_HORA_DESCARGA` | hora (Ecuador) a partir de la cual se hace la descarga diaria, ej. `07:00` |
+| `FACTIBLE_INTERVALO_CONSULTA` | segundos entre consultas del token mientras está PENDIENTE |
+
+Antes de usarla por primera vez: `python crear_tabla_descargas_factible.py`.
+
+Cómo funciona: al arrancar el servidor se inicia un hilo (`app/core/descarga_factible.py`)
+que genera el token del día anterior a la hora configurada, lo consulta hasta que
+Factible lo marca FINALIZADO, y extrae del ZIP **solo las facturas** (codDoc 01) que
+no existan ya en la base, nombradas `<claveAcceso>.xml`. El panel de vigilancia muestra
+las últimas descargas y tiene un botón **Descargar ahora** para una fecha puntual.
+Si la descarga falla, se reintenta cada 30 minutos; si el servidor se reinicia con un
+token pendiente, lo retoma.
+
+Factible solo permite **un token pendiente por empresa**, sin importar la fecha. Si
+responde "ya existe un token pendiente", el sistema vuelve a consultar los tokens que
+había generado y dado por perdidos, y retoma los que Factible todavía tiene (los que
+tienen el ZIP listo se descargan solos). Un token nunca se abandona por tiempo: después
+de 2 horas el panel muestra un aviso con el token para pedir a soporte de Factible que
+lo libere. Conviene pedir las fechas de una en una.
+
 ## Probar que todo funciona
 
 - Subí `ejemplos/factura_valida.xml` desde la pantalla de Recepción — debería
@@ -109,10 +141,12 @@ app/
     aprobaciones.py         aprobar / rechazar / guardar preliminar
     historial.py            historial paginado de acciones
     envios_sap.py           envío a SAP (hoy: simulador)
+    descarga_factible.py    descarga diaria de facturas recibidas desde Factible
     models.py                tablas (Factura, Proveedor, CuentaContable, ...)
   adaptadores/
     asesor_ia/               sugerencia de cuenta contable vía Claude
     sap/                      simulador de envío a SAP
+    factible/                 cliente REST de Factible + simulador
   templates/                  pantallas (Jinja2 + HTMX, sin framework JS)
   static/style.css             estilos (una sola hoja, sin build step)
 tests/                         pruebas automatizadas (pytest)

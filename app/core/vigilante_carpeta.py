@@ -18,6 +18,7 @@ import shutil
 import threading
 import time
 import logging
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -28,6 +29,10 @@ from app.core.models import EstadoVigilante
 
 CARPETA_POR_DEFECTO = r"C:\Users\nicole.yepez\OneDrive - ITRONIK SERVICES SA\Documentos\Facturas"
 INTERVALO_REVISION_SEGUNDOS = 5
+# Cada factura espera la respuesta de la IA (varios segundos), asi que se procesan
+# varias a la vez. Si dos archivos traen el mismo numero de factura, la restriccion
+# unique de facturas.numero_factura hace que uno termine en errores/.
+ARCHIVOS_EN_PARALELO = 4
 
 log = logging.getLogger("vigilante")
 
@@ -244,15 +249,20 @@ def _bucle_vigilancia(carpeta_str: str) -> None:
     carpeta_procesadas.mkdir(exist_ok=True)
     carpeta_errores.mkdir(exist_ok=True)
 
+    def procesar_si_sigue_activo(ruta: Path) -> None:
+        if not _detener.is_set():
+            procesar_archivo(ruta, carpeta_procesadas, carpeta_errores)
+
     log.info("Vigilando carpeta: %s (revision cada %ss)", carpeta, INTERVALO_REVISION_SEGUNDOS)
     try:
         while not _detener.is_set():
             _actualizar_estado("vigilando", carpeta_monitoreada=str(carpeta))
-            for ruta in _xml_pendientes(carpeta):
-                if _detener.is_set():
-                    break
+            pendientes = _xml_pendientes(carpeta)
+            if pendientes:
                 _actualizar_estado("procesando", carpeta_monitoreada=str(carpeta))
-                procesar_archivo(ruta, carpeta_procesadas, carpeta_errores)
+                with ThreadPoolExecutor(max_workers=ARCHIVOS_EN_PARALELO, thread_name_prefix="vigilante") as ejecutor:
+                    # list() para que una excepcion de un archivo se propague igual que antes.
+                    list(ejecutor.map(procesar_si_sigue_activo, pendientes))
             if not _detener.is_set():
                 _actualizar_estado("vigilando", carpeta_monitoreada=str(carpeta))
             _detener.wait(INTERVALO_REVISION_SEGUNDOS)

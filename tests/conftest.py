@@ -7,6 +7,13 @@ from app.db.config import Base
 from app.core.models import Factura, Proveedor, CuentaContable, FacturaDetalleLinea, HistorialAccion  # noqa: F401
 
 
+@pytest.fixture(autouse=True)
+def _sin_openrouter(monkeypatch):
+    # Las pruebas mockean anthropic.Anthropic; si .env trae OPENROUTER_API_KEY se
+    # irian por OpenRouter y harian llamadas reales.
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+
 @pytest.fixture()
 def db_session():
     """

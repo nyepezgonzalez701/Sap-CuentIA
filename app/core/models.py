@@ -90,7 +90,7 @@ class HistorialAccion(Base):
     motivo = Column(Text, nullable=True)
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
 
-
+#Usuario base en cado de contadora registre el ejemplo de cuenta contables
 class Usuario(Base):
     __tablename__ = "usuarios"
 
@@ -129,3 +129,28 @@ class HistorialVigilancia(Base):
     resultado = Column(String, nullable=False)  # "ok" | "error"
     mensaje = Column(Text, nullable=True)
     creado_en = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class DescargaFactible(Base):
+    """
+    Una descarga de documentos RECIBIDOS desde el ApiRest de Factible para una fecha.
+    Guarda el token apenas se genera porque la API no lo vuelve a entregar ("Ya existe
+    un token pendiente" responde con Token=null) -- si el servidor se reinicia, el
+    programador retoma desde aqui los tokens PENDIENTE (ver app/core/descarga_factible.py).
+    """
+    __tablename__ = "descargas_factible"
+
+    id = Column(Integer, primary_key=True, index=True)
+    ruc_empresa = Column(String, nullable=False)
+    fecha_documentos = Column(Date, nullable=False, index=True)
+    token = Column(String, nullable=True)
+    estado = Column(String, nullable=False)  # PENDIENTE | FINALIZADO | SIN_DOCUMENTOS | ERROR
+    origen = Column(String, nullable=False)  # "automatica" | "manual"
+    usuario = Column(String, nullable=False)
+    total_claves = Column(Integer, nullable=False, default=0)
+    xml_guardados = Column(Integer, nullable=False, default=0)
+    omitidos_duplicados = Column(Integer, nullable=False, default=0)
+    omitidos_no_factura = Column(Integer, nullable=False, default=0)
+    mensaje = Column(Text, nullable=True)
+    creado_en = Column(DateTime(timezone=True), server_default=func.now())
+    actualizado_en = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())

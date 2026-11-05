@@ -55,6 +55,8 @@ def procesar_factura_xml(db, contenido: bytes) -> ResultadoIngesta:
         impuestos=datos.impuestos,
         total=datos.total,
         estado="pendiente",
+       
+    
     )
     db.add(nueva_factura)
     db.flush()  # asigna nueva_factura.id, necesario para las lineas de detalle
