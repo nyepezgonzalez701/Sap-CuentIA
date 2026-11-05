@@ -15,10 +15,14 @@ from app.core.models import Usuario
 COOKIE_NAME = "sesion"
 MAX_EDAD_SESION_SEGUNDOS = 60 * 60 * 12  # 12 horas
 
-# En produccion, definir SECRET_KEY en el .env -- si no esta definida, usar un valor
-# fijo de desarrollo invalidaria todas las sesiones activas al reiniciar el servidor
-# solo si cambia entre arranques, no es un riesgo por si mismo pero conviene fijarla.
-SECRET_KEY = os.getenv("SECRET_KEY", "clave-de-desarrollo-cambiar-en-produccion")
+# Sin valor por defecto a proposito: con una clave escrita en el codigo, quien la conozca
+# podria falsificar la cookie de sesion de cualquier usuario. La app no arranca sin ella.
+SECRET_KEY = os.getenv("SECRET_KEY")
+if not SECRET_KEY:
+    raise RuntimeError(
+        "Falta SECRET_KEY en el .env. Generala con: "
+        'python -c "import secrets; print(secrets.token_urlsafe(48))"'
+    )
 
 _serializer = URLSafeTimedSerializer(SECRET_KEY, salt="sesion-usuario")
 _contexto_contrasenas = CryptContext(schemes=["bcrypt"], deprecated="auto")

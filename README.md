@@ -47,6 +47,13 @@ enviarla a SAP. La IA recomienda; una persona siempre decide.
    ```
    DATABASE_URL=postgresql://usuario:contraseña@localhost:5432/nombre_de_tu_bd
    ANTHROPIC_API_KEY=sk-ant-...
+   SECRET_KEY=<generala con el comando de abajo>
+   ```
+
+   `SECRET_KEY` es obligatoria: firma las sesiones y la app no arranca sin ella.
+
+   ```powershell
+   python -c "import secrets; print(secrets.token_urlsafe(48))"
    ```
 
 3. **Crear la base de datos** (una base vacía en Postgres con el nombre que pusiste

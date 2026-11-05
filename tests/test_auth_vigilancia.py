@@ -6,6 +6,9 @@ porque el hilo de fondo abre su propia conexion en otro hilo y necesita ver
 los mismos datos que la request que lo arranco) y una carpeta temporal en vez
 de la carpeta real de OneDrive.
 """
+import os
+import subprocess
+import sys
 import time
 from datetime import date
 
@@ -17,7 +20,7 @@ from sqlalchemy.orm import sessionmaker
 import app.main as main_module
 import app.core.vigilante_carpeta as vigilante_carpeta
 from app.core.auth import hash_contrasena
-from app.core.models import Usuario, HistorialVigilancia, Factura, FacturaDetalleLinea
+from app.core.models import EstadoVigilante, Usuario, HistorialVigilancia, Factura, FacturaDetalleLinea
 from app.db.config import Base
 
 USUARIO_PRUEBA = "contadora_prueba"
@@ -174,6 +177,47 @@ def test_revisar_carpeta_usa_la_ruta_escrita_en_el_panel(cliente, tmp_path):
             db.close()
     finally:
         vigilante_carpeta.detener_monitoreo()
+
+
+def test_estado_tolera_que_otro_hilo_cree_la_fila_primero(cliente, monkeypatch):
+    """Con la tabla vacia, el hilo de vigilancia y una request pueden crear la fila id=1 a
+    la vez. Antes, el perdedor lanzaba IntegrityError y el vigilante quedaba en "error"."""
+    _, SessionLocal, _ = cliente
+    db = SessionLocal()
+    otra = SessionLocal()
+    try:
+        get_real = db.get
+        llamadas = []
+
+        def get_con_carrera(modelo, identidad):
+            llamadas.append(identidad)
+            if len(llamadas) == 1:
+                # Entre el "no existe" de este hilo y su INSERT, el otro crea la fila.
+                otra.add(EstadoVigilante(id=1, estado="vigilando"))
+                otra.commit()
+                return None
+            return get_real(modelo, identidad)
+
+        monkeypatch.setattr(db, "get", get_con_carrera)
+        estado = vigilante_carpeta.leer_estado(db)
+        assert estado.id == 1
+        assert estado.estado == "vigilando"
+    finally:
+        db.close()
+        otra.close()
+
+
+@pytest.mark.parametrize("variables", [{"SECRET_KEY": ""}, {"SECRET_KEY": "una-clave-de-prueba"}])
+def test_la_app_no_arranca_sin_secret_key(variables):
+    entorno = {**os.environ, "DATABASE_URL": "sqlite:///:memory:", **variables}
+    resultado = subprocess.run(
+        [sys.executable, "-c", "import app.core.auth"], env=entorno, capture_output=True, text=True
+    )
+    if variables["SECRET_KEY"]:
+        assert resultado.returncode == 0, resultado.stderr
+    else:
+        assert resultado.returncode != 0
+        assert "Falta SECRET_KEY" in resultado.stderr
 
 
 def test_revisar_carpeta_con_ruta_invalida_muestra_error_sin_caerse(cliente, tmp_path):

@@ -23,6 +23,8 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
+from sqlalchemy.exc import IntegrityError
+
 from app.db.config import SessionLocal
 from app.core.ingesta import procesar_factura_xml
 from app.core.models import EstadoVigilante
@@ -48,7 +50,13 @@ def _obtener_o_crear_estado(db) -> EstadoVigilante:
     if estado is None:
         estado = EstadoVigilante(id=1, estado="en_espera")
         db.add(estado)
-        db.commit()
+        try:
+            db.commit()
+        except IntegrityError:
+            # El hilo de vigilancia y una request pueden crear la fila a la vez con la
+            # tabla vacia: si el otro gano, se usa la suya.
+            db.rollback()
+            return db.get(EstadoVigilante, 1)
         db.refresh(estado)
     return estado
 

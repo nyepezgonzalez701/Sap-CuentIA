@@ -1,5 +1,9 @@
 import os
 
+# Antes de importar la app: app.core.auth exige SECRET_KEY al importarse. Asi las pruebas
+# no dependen de un .env ni usan la clave real.
+os.environ["SECRET_KEY"] = "solo-para-pruebas"
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
