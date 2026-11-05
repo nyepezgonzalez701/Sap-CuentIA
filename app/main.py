@@ -778,9 +778,9 @@ def enviar_sap(request: Request, factura_id: int):
     try:
         try:
             factura = enviar_a_sap(db, factura_id, usuario)
-            return f"""<div class="resultado-accion resultado-aprobada"><strong>Registrada en SAP</strong> &middot; referencia: {factura.referencia_sap}</div>"""
+            return f"""<div class="resultado-accion resultado-aprobada"><strong>Registrada en SAP</strong> &middot; referencia: {html.escape(factura.referencia_sap or "")}</div>"""
         except EnvioInvalidoError as e:
-            return f'<div class="resultado-accion resultado-error"><strong>SAP rechazo el envio.</strong> {e}</div>'
+            return f'<div class="resultado-accion resultado-error"><strong>SAP rechazo el envio.</strong> {html.escape(str(e))}</div>'
     finally:
         db.close()
 
@@ -807,6 +807,7 @@ def validar_sri(request: Request, factura_id: int):
 BADGES_ACCION = {
     "aprobada": ("badge-exito", "Aprobada"),
     "registrada_sap": ("badge-exito", "Registrada en SAP"),
+    "ya_existia_sap": ("badge-exito", "Ya existia en SAP"),
     "consultada_sri": ("badge-neutro", "Consultada en SRI"),
     "rechazada": ("badge-peligro", "Rechazada"),
     "error_envio_sap": ("badge-peligro", "Error al enviar a SAP"),

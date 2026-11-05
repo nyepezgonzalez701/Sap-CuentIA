@@ -1,7 +1,8 @@
 ﻿import random
 import string
+from datetime import date
 
-from app.adaptadores.sap.base import ClienteSAP, ResultadoEnvioSAP
+from app.adaptadores.sap.base import ClienteSAP, LineaFacturaSAP, ResultadoEnvioSAP
 
 
 RUCS_BLOQUEADOS_EN_SAP = {
@@ -12,7 +13,15 @@ MONTO_MAXIMO_AUTOMATICO = 5000.00
 
 
 class SimuladorSAP(ClienteSAP):
-    def enviar_factura(self, ruc_proveedor: str, numero_factura: str, total: float) -> ResultadoEnvioSAP:
+    def enviar_factura(
+        self,
+        ruc_proveedor: str,
+        numero_factura: str,
+        total: float,
+        *,
+        fecha_emision: date | None = None,
+        lineas: list[LineaFacturaSAP] | None = None,
+    ) -> ResultadoEnvioSAP:
         if ruc_proveedor in RUCS_BLOQUEADOS_EN_SAP:
             return ResultadoEnvioSAP(
                 exitoso=False,

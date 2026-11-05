@@ -12,7 +12,7 @@ enviarla a SAP. La IA recomienda; una persona siempre decide.
   contable sugerida por la IA, para que una persona la confirme, la corrija, la
   guarde de forma preliminar (para retomarla después) o la rechace.
 - **Aprobadas** (`/aprobadas`): facturas ya aprobadas, listas para enviarse a SAP
-  (hoy contra un simulador).
+  (por defecto contra un simulador; ver "Envío a SAP Business One").
 - **Historial** (`/historial`): quién hizo cada acción y cuándo, paginado.
 
 ## Requisitos
@@ -112,6 +112,80 @@ tienen el ZIP listo se descargan solos). Un token nunca se abandona por tiempo: 
 de 2 horas el panel muestra un aviso con el token para pedir a soporte de Factible que
 lo libere. Conviene pedir las fechas de una en una.
 
+## Envío a SAP Business One (Service Layer)
+
+> **Aún no se ha probado contra un SAP real**, solo contra un servidor simulado. No
+> activar `SAP_MODO=servicelayer` en producción sin completar antes la lista de puntos
+> por verificar de esta sección.
+
+El envío usa el simulador por defecto. Una factura solo llega a SAP si está `aprobada`
+y su aprobación por una persona consta en el historial. Las rechazadas, guardadas o
+pendientes nunca llegan al adaptador. Hoy no hay botón de envío en `/aprobadas`: se
+envía con `POST /facturas/{id}/enviar-sap`, con sesión iniciada.
+
+Configuración en `.env` (ver `.env.example`):
+
+| Variable | Qué es |
+|---|---|
+| `SAP_MODO` | `simulador` (por defecto) o `servicelayer`. Un valor inválido da error; nunca cae al simulador en silencio |
+| `SAP_URL_BASE` | base del Service Layer, ej. `https://servidor:50000/b1s/v2/` |
+| `SAP_COMPANY_DB` / `SAP_USUARIO` / `SAP_CLAVE` | credenciales (nunca en el código). La clave y la cookie de sesión no se registran |
+| `SAP_VERIFICAR_TLS` | `true` por defecto. `false` solo para un certificado propio en pruebas |
+| `SAP_CAMPO_RUC_PROVEEDOR` | campo de `BusinessPartners` con el RUC. **Sin verificar** |
+| `SAP_CAMPO_CUENTA_LINEA` | campo de `DocumentLines` con la cuenta contable. **Sin verificar** |
+| `SAP_CAMPO_NUMERO_FACTURA` | campo de `PurchaseInvoices` con el número de factura del proveedor. **Sin verificar** |
+
+Las tres `SAP_CAMPO_*` no tienen valor por defecto en el código: en modo `servicelayer`
+son obligatorias, para no escribir en un campo equivocado por suposición.
+
+Antes de crear una factura se consulta si ya existe una de ese proveedor con el mismo
+número. Si existe, no se crea otra y se registra su id, lo que cubre los reintentos. Si
+SAP no responde al crear, se consulta una vez; si no aparece, el envío queda como
+"resultado incierto" y la factura sigue `aprobada`. El historial guarda quién aprobó,
+quién envió, cuándo y la respuesta de SAP, sin datos sensibles.
+
+### Probar con el simulador
+
+Pruebas automáticas, solo contra un servidor local en `127.0.0.1`, nunca contra un SAP real:
+
+```powershell
+pytest tests/test_sap_servicelayer.py -v
+```
+
+Con la app, en otra terminal levantá el servidor simulado:
+
+```powershell
+python -m tests.servicelayer_simulado --puerto 50000 --proveedor 1790012345001=P0001
+```
+
+Copiá a tu `.env` las variables que imprime (usa `http://` y datos falsos), con
+`SAP_MODO=servicelayer`, y reiniciá la app. El RUC de la factura debe estar en un
+`--proveedor`. Los datos del servidor simulado se pierden al cerrarlo.
+
+### Puntos pendientes de verificar con SAP real
+
+Comprobar con `GET /b1s/v2/$metadata` y una base de pruebas. Lo no verificado está
+aislado en `app/adaptadores/sap/mapeo_servicelayer.py` y en las variables `SAP_CAMPO_*`.
+
+- [ ] Cómo se enlaza el RUC del proveedor con el `CardCode` (`SAP_CAMPO_RUC_PROVEEDOR`).
+- [ ] Cómo se envía la cuenta contable en cada línea (`SAP_CAMPO_CUENTA_LINEA`), y si
+      espera el código interno o el código con formato.
+- [ ] Qué campo lleva el número de factura del proveedor (`SAP_CAMPO_NUMERO_FACTURA`) y
+      con qué formato (`001-001-000000123`). La detección de repetidas depende de esto.
+- [ ] Códigos de error. Hoy `-5002`, `301` y HTTP 401 cuentan como sesión expirada, y
+      `-2028` como objeto bloqueado. La evidencia pública asocia `-2028` a "No matching
+      records found" y la sesión inválida a `301`, así que hay que provocarlos y confirmarlos.
+- [ ] Código de impuesto por línea: **no se envía todavía**, así que el IVA de SAP puede
+      diferir del XML. Si `DocTotal` no coincide, el historial deja un aviso, pero la
+      factura ya quedó creada.
+- [ ] `DocType=dDocument_Service`, `LineTotal`, `ItemDescription` y `CardType=cSupplier`.
+- [ ] Campos obligatorios adicionales de esa instalación (por ejemplo `DocDueDate` o
+      campos de la localización de Ecuador).
+- [ ] Facturas canceladas: hoy una cancelada cuenta como existente y no se crea otra.
+- [ ] Doble envío simultáneo: el bloqueo de fila solo actúa en Postgres (SQLite lo
+      ignora), así que no está cubierto por las pruebas.
+- [ ] Si el límite de $5000 del simulador es una regla real: el modo `servicelayer` no lo aplica.
+
 ## Probar que todo funciona
 
 - Subí `ejemplos/factura_valida.xml` desde la pantalla de Recepción — debería
@@ -140,12 +214,12 @@ app/
     validaciones.py         RUC, duplicados, estado del proveedor
     aprobaciones.py         aprobar / rechazar / guardar preliminar
     historial.py            historial paginado de acciones
-    envios_sap.py           envío a SAP (hoy: simulador)
+    envios_sap.py           reglas de envío a SAP y auditoría
     descarga_factible.py    descarga diaria de facturas recibidas desde Factible
     models.py                tablas (Factura, Proveedor, CuentaContable, ...)
   adaptadores/
     asesor_ia/               sugerencia de cuenta contable vía Claude
-    sap/                      simulador de envío a SAP
+    sap/                      simulador y cliente Service Layer (SAP_MODO)
     factible/                 cliente REST de Factible + simulador
   templates/                  pantallas (Jinja2 + HTMX, sin framework JS)
   static/style.css             estilos (una sola hoja, sin build step)

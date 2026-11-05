@@ -1,7 +1,10 @@
+import os
+
 import pytest
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
+import app.adaptadores.sap.fabrica as fabrica_sap
 from app.db.config import Base
 # Los modelos deben estar importados para que Base los conozca al crear las tablas.
 from app.core.models import Factura, Proveedor, CuentaContable, FacturaDetalleLinea, HistorialAccion  # noqa: F401
@@ -12,6 +15,16 @@ def _sin_openrouter(monkeypatch):
     # Las pruebas mockean anthropic.Anthropic; si .env trae OPENROUTER_API_KEY se
     # irian por OpenRouter y harian llamadas reales.
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _sin_sap_real(monkeypatch):
+    # app.db.config carga el .env al importarse: sin esto, un SAP_MODO=servicelayer real
+    # en el .env haria que las pruebas apuntaran a ese SAP.
+    for nombre in list(os.environ):
+        if nombre.startswith("SAP_"):
+            monkeypatch.delenv(nombre)
+    monkeypatch.setattr(fabrica_sap, "_cliente", None)
 
 
 @pytest.fixture()
