@@ -17,9 +17,10 @@ class SimuladorSRI(ClienteSRI):
                 autorizado=False,
                 estado="NO ENCONTRADO",
                 mensaje="La clave de acceso no tiene el formato esperado (49 digitos).",
+                
             )
 
-        # Simula que el SRI no tiene registro de la clace de aceo
+        # Simula que el SRI no tiene registro de la clave de acceso, devolviendo un mensaje de error. Esto permite probar el flujo de
 
         if clave_acceso in CLAVES_NO_AUTORIZADAS_EN_SRI:
             return ResultadoValidacionSRI(

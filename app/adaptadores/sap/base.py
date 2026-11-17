@@ -11,6 +11,7 @@ class LineaFacturaSAP:
     codigo_cuenta: str
 
 
+
 @dataclass
 class ResultadoEnvioSAP:
     exitoso: bool

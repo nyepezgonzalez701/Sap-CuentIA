@@ -90,5 +90,10 @@ def obtener_cliente_sap() -> ClienteSAP:
                 clave=config.clave,
                 campos=config.campos,
                 verificar_tls=config.verificar_tls,
+              
+
+
+
+    
             )
         return _cliente

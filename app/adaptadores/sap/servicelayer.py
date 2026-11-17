@@ -143,6 +143,7 @@ class ServiceLayerSAP(ClienteSAP):
                 ya_renovo_sesion = True
                 self._sesion_activa = False
                 continue
+
             if es_objeto_bloqueado(error.codigo):
                 segundos = next(esperas, None)
                 if segundos is None:

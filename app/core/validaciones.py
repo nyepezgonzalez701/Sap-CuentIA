@@ -61,6 +61,8 @@ def formato_ruc_valido(ruc: str) -> bool:
     """
     if not ruc_estructuralmente_valido(ruc):
         return False
+
+    
     if ruc[:2] not in _PROVINCIAS_RUC_VALIDAS:
         return False
     if ruc[2] not in _TERCER_DIGITO_RUC_VALIDO:

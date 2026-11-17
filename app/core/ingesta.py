@@ -81,7 +81,6 @@ def procesar_factura_xml(db, contenido: bytes) -> ResultadoIngesta:
                 justificacion=linea["justificacion"],
 
               
-
             
             ))
     else:
